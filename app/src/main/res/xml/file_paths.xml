@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <files-path name="zap2_media" path="media/" />
+    <files-path name="zap2_backups" path="backups/" />
+    <cache-path name="zap2_cache" path="." />
+</paths>

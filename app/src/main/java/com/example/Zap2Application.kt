@@ -1,0 +1,111 @@
+package com.example
+
+import android.app.Activity
+import android.app.Application
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
+import android.os.Build
+import android.os.Bundle
+import com.example.data.local.SettingsDataStore
+import com.example.data.local.Zap2Database
+import com.example.data.remote.AuthRepository
+import com.example.data.remote.BackupRepository
+import com.example.data.remote.CallSignalingRepository
+import com.example.data.remote.ChatRepository
+import com.example.data.remote.UserAndContactsRepository
+import com.example.data.remote.WebRtcCallManager
+import com.example.service.AudioRecorderPlayer
+import com.google.firebase.Firebase
+import com.google.firebase.auth.auth
+import com.google.firebase.firestore.FirebaseFirestore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+
+class AppContainer(context: Context) {
+    private val appContext = context.applicationContext
+    val databaseId: String = appContext.getString(R.string.firestore_database_id)
+    val firestore: FirebaseFirestore = FirebaseFirestore.getInstance(databaseId)
+    val settingsStore: SettingsDataStore = SettingsDataStore(appContext)
+    val authRepository: AuthRepository = AuthRepository()
+
+    val localDao get() = Zap2Database.getInstance(appContext).zap2Dao()
+
+    val userRepository: UserAndContactsRepository
+        get() = UserAndContactsRepository(firestore, localDao)
+
+    val chatRepository: ChatRepository
+        get() = ChatRepository(appContext, firestore, localDao)
+
+    val backupRepository: BackupRepository
+        get() = BackupRepository(appContext, firestore, settingsStore)
+
+    val callSignalingRepository: CallSignalingRepository = CallSignalingRepository(firestore)
+    val webRtcCallManager: WebRtcCallManager by lazy {
+        WebRtcCallManager(appContext, callSignalingRepository)
+    }
+    val audioRecorderPlayer: AudioRecorderPlayer by lazy {
+        AudioRecorderPlayer(appContext)
+    }
+}
+
+class Zap2Application : Application() {
+    lateinit var container: AppContainer
+        private set
+
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var startedActivityCount = 0
+
+    override fun onCreate() {
+        super.onCreate()
+        container = AppContainer(this)
+        createNotificationChannels()
+
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+            override fun onActivityStarted(activity: Activity) {
+                if (startedActivityCount == 0 && Firebase.auth.currentUser != null) {
+                    appScope.launch { container.userRepository.setOnlineStatus(true) }
+                }
+                startedActivityCount++
+            }
+            override fun onActivityResumed(activity: Activity) {}
+            override fun onActivityPaused(activity: Activity) {}
+            override fun onActivityStopped(activity: Activity) {
+                startedActivityCount = (startedActivityCount - 1).coerceAtLeast(0)
+                if (startedActivityCount == 0 && !activity.isChangingConfigurations &&
+                    Firebase.auth.currentUser != null
+                ) {
+                    appScope.launch { container.userRepository.setOnlineStatus(false) }
+                }
+            }
+            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+            override fun onActivityDestroyed(activity: Activity) {}
+        })
+    }
+
+    private fun createNotificationChannels() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = getSystemService(NotificationManager::class.java)
+            val messagesChannel = NotificationChannel(
+                CHANNEL_MESSAGES,
+                getString(R.string.notification_channel_messages),
+                NotificationManager.IMPORTANCE_DEFAULT
+            )
+            val callsChannel = NotificationChannel(
+                CHANNEL_CALLS,
+                getString(R.string.notification_channel_calls),
+                NotificationManager.IMPORTANCE_HIGH
+            )
+            manager.createNotificationChannel(messagesChannel)
+            manager.createNotificationChannel(callsChannel)
+        }
+    }
+
+    companion object {
+        const val CHANNEL_MESSAGES = "zap2_messages"
+        const val CHANNEL_CALLS = "zap2_calls"
+    }
+}

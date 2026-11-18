@@ -1,0 +1,24 @@
+<resources>
+    <string name="app_name">Zap2</string>
+    <string name="tagline">Mensageiro Expressivo em Tempo Real</string>
+    <string name="sign_in_google">Entrar com Google</string>
+    <string name="sign_in_subtitle">Conecte sua conta Google para sincronizar conversas, chamadas WebRTC e backups na nuvem.</string>
+    <string name="nav_chats">Conversas</string>
+    <string name="nav_contacts">Contatos</string>
+    <string name="nav_calls">Chamadas</string>
+    <string name="nav_backup">Backup</string>
+    <string name="typing_indicator">digitando...</string>
+    <string name="online_status">Online</string>
+    <string name="last_seen_prefix">Visto por último às %1$s</string>
+    <string name="offline_status">Offline</string>
+    <string name="empty_chats_title">Nenhuma conversa ainda</string>
+    <string name="empty_chats_body">Adicione um contato pelo número ou agenda do celular para iniciar um bate-papo ou criar um grupo.</string>
+    <string name="search_chats_hint">Buscar conversas ou grupos</string>
+    <string name="type_message_hint">Mensagem no Zap2…</string>
+    <string name="new_chat">Nova conversa</string>
+    <string name="new_group">Novo grupo</string>
+    <string name="backup_title">Backup Local e Nuvem</string>
+    <string name="phone_verification_title">Verificação por SMS</string>
+    <string name="notification_channel_messages">Mensagens do Zap2</string>
+    <string name="notification_channel_calls">Chamadas do Zap2</string>
+</resources>

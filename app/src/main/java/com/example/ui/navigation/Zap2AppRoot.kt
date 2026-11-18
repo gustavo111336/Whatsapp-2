@@ -1,0 +1,427 @@
+package com.example.ui.navigation
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import android.util.Log
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Backup
+import androidx.compose.material.icons.outlined.Call
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.Contacts
+import androidx.compose.material.icons.rounded.Backup
+import androidx.compose.material.icons.rounded.Call
+import androidx.compose.material.icons.rounded.ChatBubble
+import androidx.compose.material.icons.rounded.Contacts
+import androidx.compose.material3.Icon
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import androidx.navigation.NavDestination.Companion.hasRoute
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.toRoute
+import com.example.AppContainer
+import com.example.R
+import com.example.ui.auth.AuthScreen
+import com.example.ui.backup.BackupAndSettingsScreen
+import com.example.ui.backup.BackupViewModel
+import com.example.ui.calls.ActiveCallScreen
+import com.example.ui.calls.CallsHistoryScreen
+import com.example.ui.calls.CallsViewModel
+import com.example.ui.calls.IncomingCallBanner
+import com.example.ui.chatdetail.ChatDetailScreen
+import com.example.ui.chatdetail.ChatDetailViewModel
+import com.example.ui.chats.ChatsListScreen
+import com.example.ui.chats.ChatsViewModel
+import com.example.ui.contacts.ContactsScreen
+import com.example.ui.contacts.ContactsViewModel
+import com.example.ui.group.GroupInfoScreen
+import com.google.firebase.Firebase
+import com.google.firebase.auth.auth
+import com.google.firebase.messaging.FirebaseMessaging
+import kotlinx.coroutines.tasks.await
+
+@Composable
+fun Zap2AppRoot(container: AppContainer) {
+    val authUser by container.authRepository.observeAuthState()
+        .collectAsStateWithLifecycle(initialValue = Firebase.auth.currentUser)
+
+    val user = authUser
+    if (user == null) {
+        AuthScreen(
+            authRepository = container.authRepository,
+            onAuthenticated = {}
+        )
+    } else {
+        key(user.uid) {
+            LaunchedEffect(user.uid) {
+                container.userRepository.ensureUserDocuments(user)
+                try {
+                    val token = FirebaseMessaging.getInstance().token.await()
+                    container.userRepository.saveFcmToken(token)
+                } catch (e: Exception) {
+                    Log.d("Zap2FCM", "FCM token unavailable: ${e.message}")
+                }
+            }
+
+            Zap2AuthenticatedShell(
+                container = container,
+                currentUserId = user.uid
+            )
+        }
+    }
+}
+
+@Composable
+private fun Zap2AuthenticatedShell(
+    container: AppContainer,
+    currentUserId: String
+) {
+    val context = LocalContext.current
+    val navController = rememberNavController()
+    val backStackEntry by navController.currentBackStackEntryAsState()
+    val currentDest = backStackEntry?.destination
+
+    val notifPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) {}
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    val chatsViewModel: ChatsViewModel = viewModel(
+        key = "chats_$currentUserId",
+        factory = viewModelFactory {
+            initializer {
+                ChatsViewModel(
+                    chatRepository = container.chatRepository,
+                    userRepository = container.userRepository,
+                    currentUserId = currentUserId
+                )
+            }
+        }
+    )
+
+    val contactsViewModel: ContactsViewModel = viewModel(
+        key = "contacts_$currentUserId",
+        factory = viewModelFactory {
+            initializer {
+                ContactsViewModel(
+                    userRepository = container.userRepository,
+                    chatRepository = container.chatRepository,
+                    currentUserId = currentUserId
+                )
+            }
+        }
+    )
+
+    val callsViewModel: CallsViewModel = viewModel(
+        key = "calls_$currentUserId",
+        factory = viewModelFactory {
+            initializer {
+                CallsViewModel(
+                    signalingRepo = container.callSignalingRepository,
+                    webRtcCallManager = container.webRtcCallManager,
+                    currentUserId = currentUserId
+                )
+            }
+        }
+    )
+
+    val backupViewModel: BackupViewModel = viewModel(
+        key = "backup_$currentUserId",
+        factory = viewModelFactory {
+            initializer {
+                BackupViewModel(
+                    authRepository = container.authRepository,
+                    userRepository = container.userRepository,
+                    backupRepository = container.backupRepository,
+                    settingsStore = container.settingsStore,
+                    currentUserId = currentUserId
+                )
+            }
+        }
+    )
+
+    val incomingCalls by callsViewModel.incomingCalls.collectAsStateWithLifecycle()
+
+    val isTopLevelTab = currentDest?.hasRoute<Zap2Route.ChatsRoute>() == true ||
+        currentDest?.hasRoute<Zap2Route.ContactsRoute>() == true ||
+        currentDest?.hasRoute<Zap2Route.CallsHistoryRoute>() == true ||
+        currentDest?.hasRoute<Zap2Route.BackupSettingsRoute>() == true
+
+    val isOnCallScreen = currentDest?.hasRoute<Zap2Route.ActiveCallRoute>() == true
+
+    val navItems = listOf(
+        Triple(Zap2Route.ChatsRoute, stringResource(R.string.nav_chats), Pair(Icons.Rounded.ChatBubble, Icons.Outlined.ChatBubbleOutline)),
+        Triple(Zap2Route.ContactsRoute, stringResource(R.string.nav_contacts), Pair(Icons.Rounded.Contacts, Icons.Outlined.Contacts)),
+        Triple(Zap2Route.CallsHistoryRoute, stringResource(R.string.nav_calls), Pair(Icons.Rounded.Call, Icons.Outlined.Call)),
+        Triple(Zap2Route.BackupSettingsRoute, stringResource(R.string.nav_backup), Pair(Icons.Rounded.Backup, Icons.Outlined.Backup))
+    )
+
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val useNavRail = maxWidth >= 600.dp && isTopLevelTab
+
+        Scaffold(
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
+            bottomBar = {
+                if (isTopLevelTab && !useNavRail) {
+                    NavigationBar(modifier = Modifier.navigationBarsPadding()) {
+                        navItems.forEach { (route, label, icons) ->
+                            val selected = currentDest?.hasRoute(route::class) == true
+                            NavigationBarItem(
+                                selected = selected,
+                                onClick = {
+                                    navController.navigate(route) {
+                                        popUpTo<Zap2Route.ChatsRoute> { saveState = true }
+                                        launchSingleTop = true
+                                        restoreState = true
+                                    }
+                                },
+                                icon = {
+                                    Icon(
+                                        imageVector = if (selected) icons.first else icons.second,
+                                        contentDescription = label
+                                    )
+                                },
+                                label = { Text(label) }
+                            )
+                        }
+                    }
+                }
+            }
+        ) { innerPadding ->
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                if (useNavRail) {
+                    NavigationRail(modifier = Modifier.statusBarsPadding()) {
+                        navItems.forEach { (route, label, icons) ->
+                            val selected = currentDest?.hasRoute(route::class) == true
+                            NavigationRailItem(
+                                selected = selected,
+                                onClick = {
+                                    navController.navigate(route) {
+                                        popUpTo<Zap2Route.ChatsRoute> { saveState = true }
+                                        launchSingleTop = true
+                                        restoreState = true
+                                    }
+                                },
+                                icon = {
+                                    Icon(
+                                        imageVector = if (selected) icons.first else icons.second,
+                                        contentDescription = label
+                                    )
+                                },
+                                label = { Text(label) }
+                            )
+                        }
+                    }
+                }
+
+                Box(modifier = Modifier.fillMaxSize()) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        AnimatedVisibility(visible = incomingCalls.isNotEmpty() && !isOnCallScreen) {
+                            incomingCalls.firstOrNull()?.let { call ->
+                                Box(modifier = Modifier.statusBarsPadding()) {
+                                    IncomingCallBanner(
+                                        call = call,
+                                        onAccept = {
+                                            navController.navigate(
+                                                Zap2Route.ActiveCallRoute(
+                                                    callId = call.id,
+                                                    isIncoming = true,
+                                                    isVideo = call.callType == "VIDEO"
+                                                )
+                                            )
+                                        },
+                                        onDecline = {
+                                            callsViewModel.declineIncomingCall(call.id)
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
+                        NavHost(
+                            navController = navController,
+                            startDestination = Zap2Route.ChatsRoute,
+                            enterTransition = { fadeIn() + slideInHorizontally { it / 6 } },
+                            exitTransition = { fadeOut() },
+                            popEnterTransition = { fadeIn() },
+                            popExitTransition = { fadeOut() + slideOutHorizontally { it / 6 } },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            composable<Zap2Route.ChatsRoute> {
+                                ChatsListScreen(
+                                    viewModel = chatsViewModel,
+                                    onOpenChat = { chatId ->
+                                        navController.navigate(Zap2Route.ChatDetailRoute(chatId))
+                                    },
+                                    onNavigateToContacts = {
+                                        navController.navigate(Zap2Route.ContactsRoute) {
+                                            popUpTo<Zap2Route.ChatsRoute> { saveState = true }
+                                            launchSingleTop = true
+                                            restoreState = true
+                                        }
+                                    },
+                                    modifier = Modifier.statusBarsPadding()
+                                )
+                            }
+
+                            composable<Zap2Route.ContactsRoute> {
+                                ContactsScreen(
+                                    viewModel = contactsViewModel,
+                                    onOpenChat = { chatId ->
+                                        navController.navigate(Zap2Route.ChatDetailRoute(chatId))
+                                    },
+                                    modifier = Modifier.statusBarsPadding()
+                                )
+                            }
+
+                            composable<Zap2Route.CallsHistoryRoute> {
+                                CallsHistoryScreen(
+                                    viewModel = callsViewModel,
+                                    onStartCall = { callId, isVideo ->
+                                        navController.navigate(
+                                            Zap2Route.ActiveCallRoute(
+                                                callId = callId,
+                                                isIncoming = false,
+                                                isVideo = isVideo
+                                            )
+                                        )
+                                    },
+                                    modifier = Modifier.statusBarsPadding()
+                                )
+                            }
+
+                            composable<Zap2Route.BackupSettingsRoute> {
+                                BackupAndSettingsScreen(
+                                    viewModel = backupViewModel,
+                                    onSignedOut = {},
+                                    modifier = Modifier.statusBarsPadding()
+                                )
+                            }
+
+                            composable<Zap2Route.ChatDetailRoute> { entry ->
+                                val route = entry.toRoute<Zap2Route.ChatDetailRoute>()
+                                val detailVm: ChatDetailViewModel = viewModel(
+                                    key = "chat_${currentUserId}_${route.chatId}",
+                                    factory = viewModelFactory {
+                                        initializer {
+                                            ChatDetailViewModel(
+                                                chatId = route.chatId,
+                                                chatRepository = container.chatRepository,
+                                                userRepository = container.userRepository,
+                                                callSignalingRepository = container.callSignalingRepository,
+                                                audioPlayer = container.audioRecorderPlayer,
+                                                currentUserId = currentUserId
+                                            )
+                                        }
+                                    }
+                                )
+                                ChatDetailScreen(
+                                    viewModel = detailVm,
+                                    onBack = { navController.popBackStack() },
+                                    onOpenGroupInfo = {
+                                        navController.navigate(Zap2Route.GroupInfoRoute(route.chatId))
+                                    },
+                                    onStartCall = { callId, isVideo ->
+                                        navController.navigate(
+                                            Zap2Route.ActiveCallRoute(
+                                                callId = callId,
+                                                isIncoming = false,
+                                                isVideo = isVideo
+                                            )
+                                        )
+                                    }
+                                )
+                            }
+
+                            composable<Zap2Route.GroupInfoRoute> { entry ->
+                                val route = entry.toRoute<Zap2Route.GroupInfoRoute>()
+                                val detailVm: ChatDetailViewModel = viewModel(
+                                    key = "chat_${currentUserId}_${route.chatId}",
+                                    factory = viewModelFactory {
+                                        initializer {
+                                            ChatDetailViewModel(
+                                                chatId = route.chatId,
+                                                chatRepository = container.chatRepository,
+                                                userRepository = container.userRepository,
+                                                callSignalingRepository = container.callSignalingRepository,
+                                                audioPlayer = container.audioRecorderPlayer,
+                                                currentUserId = currentUserId
+                                            )
+                                        }
+                                    }
+                                )
+                                GroupInfoScreen(
+                                    viewModel = detailVm,
+                                    onBack = { navController.popBackStack() },
+                                    onLeftGroup = {
+                                        navController.popBackStack<Zap2Route.ChatsRoute>(inclusive = false)
+                                    }
+                                )
+                            }
+
+                            composable<Zap2Route.ActiveCallRoute> { entry ->
+                                val route = entry.toRoute<Zap2Route.ActiveCallRoute>()
+                                ActiveCallScreen(
+                                    callId = route.callId,
+                                    currentUserId = currentUserId,
+                                    isIncoming = route.isIncoming,
+                                    isVideo = route.isVideo,
+                                    callManager = container.webRtcCallManager,
+                                    onCallEnded = { navController.popBackStack() }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

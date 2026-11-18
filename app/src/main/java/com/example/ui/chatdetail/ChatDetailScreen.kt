@@ -1,0 +1,779 @@
+package com.example.ui.chatdetail
+
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.Send
+import androidx.compose.material.icons.rounded.Call
+import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.DoneAll
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PhotoLibrary
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Videocam
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.compose.AsyncImage
+import com.example.R
+import com.example.data.model.ChatMessage
+import com.example.data.model.UiState
+import com.example.ui.components.TypingDotsAnimated
+import com.example.ui.components.Zap2Avatar
+import com.example.ui.components.formatClockTime
+import com.example.ui.theme.Zap2ExpressiveShapes
+import com.example.ui.theme.ZapOnlineGreen
+import com.example.ui.theme.ZapReadBlue
+import java.io.File
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ChatDetailScreen(
+    viewModel: ChatDetailViewModel,
+    onBack: () -> Unit,
+    onOpenGroupInfo: () -> Unit,
+    onStartCall: (callId: String, isVideo: Boolean) -> Unit
+) {
+    val context = LocalContext.current
+    val chatRoom by viewModel.chatRoom.collectAsStateWithLifecycle()
+    val messagesState by viewModel.messagesState.collectAsStateWithLifecycle()
+    val typingUsers by viewModel.typingUsers.collectAsStateWithLifecycle()
+    val peerProfile by viewModel.peerProfile.collectAsStateWithLifecycle()
+    val draftText by viewModel.draftText.collectAsStateWithLifecycle()
+    val isSendingMedia by viewModel.isSendingMedia.collectAsStateWithLifecycle()
+    val errorBanner by viewModel.errorBanner.collectAsStateWithLifecycle()
+
+    val isRecording by viewModel.audioPlayer.isRecording.collectAsStateWithLifecycle()
+    val recordingDurationMs by viewModel.audioPlayer.recordingDurationMs.collectAsStateWithLifecycle()
+    val recordingAmplitude by viewModel.audioPlayer.amplitude.collectAsStateWithLifecycle()
+    val playingMessageId by viewModel.audioPlayer.playingMessageId.collectAsStateWithLifecycle()
+    val playbackProgress by viewModel.audioPlayer.playbackProgress.collectAsStateWithLifecycle()
+
+    val listState = rememberLazyListState()
+    var pendingCallIsVideo by remember { mutableStateOf<Boolean?>(null) }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.sendImage(uri)
+        }
+    }
+
+    val audioRecordPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            viewModel.audioPlayer.startRecording()
+        }
+    }
+
+    val callPermissionsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val isVideo = pendingCallIsVideo ?: false
+        pendingCallIsVideo = null
+        val audioOk = grants[Manifest.permission.RECORD_AUDIO] == true
+        val videoOk = !isVideo || grants[Manifest.permission.CAMERA] == true
+        if (audioOk && videoOk) {
+            viewModel.startCall(isVideo, onStartCall)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.onDraftChanged("")
+            viewModel.audioPlayer.stopPlayback()
+        }
+    }
+
+    val title = chatRoom?.resolveDisplayTitle(viewModel.currentUserId) ?: "Conversa"
+    val isGroup = chatRoom?.chatType == "GROUP"
+
+    val statusSubtitle = when {
+        typingUsers.isNotEmpty() -> {
+            if (isGroup) {
+                "${typingUsers.joinToString(", ") { it.displayName }} digitando..."
+            } else {
+                "Digitando..."
+            }
+        }
+        !isGroup && peerProfile?.online == true -> "Online"
+        !isGroup && peerProfile?.lastSeen != null -> {
+            "Visto por último às ${formatClockTime(peerProfile?.lastSeen?.toDate())}"
+        }
+        isGroup -> "${chatRoom?.participantUids?.size ?: 1} participantes"
+        else -> "Offline"
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer
+                ),
+                navigationIcon = {
+                    IconButton(
+                        onClick = onBack,
+                        modifier = Modifier.testTag("chat_back_button")
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Rounded.ArrowBack,
+                            contentDescription = "Voltar"
+                        )
+                    }
+                },
+                title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = isGroup, onClick = onOpenGroupInfo)
+                    ) {
+                        Zap2Avatar(
+                            name = title,
+                            photoUrl = if (isGroup) chatRoom?.groupPhotoUrl else peerProfile?.photoUrl,
+                            isGroup = isGroup,
+                            online = !isGroup && peerProfile?.online == true,
+                            size = 40.dp
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = title,
+                                style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                if (typingUsers.isNotEmpty()) {
+                                    TypingDotsAnimated(color = MaterialTheme.colorScheme.primary)
+                                } else if (!isGroup && peerProfile?.online == true) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(ZapOnlineGreen)
+                                    )
+                                }
+                                Text(
+                                    text = statusSubtitle,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (typingUsers.isNotEmpty() || peerProfile?.online == true) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.testTag("chat_presence_subtitle")
+                                )
+                            }
+                        }
+                    }
+                },
+                actions = {
+                    IconButton(
+                        onClick = {
+                            val hasAudio = ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.RECORD_AUDIO
+                            ) == PackageManager.PERMISSION_GRANTED
+                            if (hasAudio) {
+                                viewModel.startCall(isVideo = false, onStartCall)
+                            } else {
+                                pendingCallIsVideo = false
+                                callPermissionsLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+                            }
+                        },
+                        modifier = Modifier.testTag("start_audio_call_button")
+                    ) {
+                        Icon(Icons.Rounded.Call, contentDescription = "Chamada de voz")
+                    }
+                    IconButton(
+                        onClick = {
+                            val hasAudio = ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.RECORD_AUDIO
+                            ) == PackageManager.PERMISSION_GRANTED
+                            val hasCam = ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.CAMERA
+                            ) == PackageManager.PERMISSION_GRANTED
+                            if (hasAudio && hasCam) {
+                                viewModel.startCall(isVideo = true, onStartCall)
+                            } else {
+                                pendingCallIsVideo = true
+                                callPermissionsLauncher.launch(
+                                    arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA)
+                                )
+                            }
+                        },
+                        modifier = Modifier.testTag("start_video_call_button")
+                    ) {
+                        Icon(Icons.Rounded.Videocam, contentDescription = "Chamada de vídeo")
+                    }
+                    if (isGroup) {
+                        IconButton(
+                            onClick = onOpenGroupInfo,
+                            modifier = Modifier.testTag("group_info_button")
+                        ) {
+                            Icon(Icons.Rounded.Info, contentDescription = "Dados do grupo")
+                        }
+                    }
+                }
+            )
+        },
+        bottomBar = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .navigationBarsPadding()
+                    .imePadding()
+            ) {
+                if (isSendingMedia) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+                if (errorBanner != null) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { viewModel.dismissError() }
+                    ) {
+                        Text(
+                            text = errorBanner.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                    }
+                }
+
+                if (isRecording) {
+                    VoiceRecordingBar(
+                        durationMs = recordingDurationMs,
+                        amplitude = recordingAmplitude,
+                        onDiscard = { viewModel.audioPlayer.stopRecording(discard = true) },
+                        onSend = {
+                            val result = viewModel.audioPlayer.stopRecording(discard = false)
+                            if (result != null) {
+                                viewModel.sendVoiceNote(result.first, result.second)
+                            }
+                        }
+                    )
+                } else {
+                    MessageComposerBar(
+                        text = draftText,
+                        onTextChange = viewModel::onDraftChanged,
+                        onPickImage = {
+                            photoPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        onStartVoiceRecord = {
+                            val granted = ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.RECORD_AUDIO
+                            ) == PackageManager.PERMISSION_GRANTED
+                            if (granted) {
+                                viewModel.audioPlayer.startRecording()
+                            } else {
+                                audioRecordPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        },
+                        onSendText = viewModel::sendTextMessage
+                    )
+                }
+            }
+        }
+    ) { innerPadding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .background(MaterialTheme.colorScheme.background),
+            contentAlignment = Alignment.TopCenter
+        ) {
+            when (val state = messagesState) {
+                UiState.Loading -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                }
+                is UiState.Error -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = state.message,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                    }
+                }
+                is UiState.Success -> {
+                    val messages = state.data
+                    LaunchedEffect(messages.size) {
+                        if (messages.isNotEmpty()) {
+                            listState.animateScrollToItem(messages.lastIndex)
+                        }
+                    }
+
+                    LazyColumn(
+                        state = listState,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .widthIn(max = 760.dp)
+                    ) {
+                        itemsIndexed(messages, key = { _, m -> m.id }) { index, msg ->
+                            val prevSender = messages.getOrNull(index - 1)?.senderId
+                            val isFirstInGroup = prevSender != msg.senderId
+                            AnimatedVisibility(
+                                visible = true,
+                                enter = fadeIn() + slideInVertically(
+                                    initialOffsetY = { 24 },
+                                    animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                                )
+                            ) {
+                                MessageBubbleRow(
+                                    message = msg,
+                                    isMine = msg.senderId == viewModel.currentUserId,
+                                    isGroup = isGroup,
+                                    isFirstInGroup = isFirstInGroup,
+                                    isPlayingAudio = playingMessageId == msg.id,
+                                    audioProgress = if (playingMessageId == msg.id) playbackProgress else 0f,
+                                    onToggleAudio = {
+                                        val localExists = msg.localMediaPath?.let { File(it).exists() } == true
+                                        val source = if (localExists) msg.localMediaPath!! else msg.mediaUrl
+                                        if (!source.isNullOrBlank()) {
+                                            viewModel.audioPlayer.togglePlayback(msg.id, source)
+                                        }
+                                    }
+                                )
+                            }
+                        }
+
+                        if (typingUsers.isNotEmpty()) {
+                            item(key = "typing_bubble") {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 6.dp),
+                                    horizontalArrangement = Arrangement.Start
+                                ) {
+                                    Surface(
+                                        shape = Zap2ExpressiveShapes.IncomingBubbleFirst,
+                                        color = MaterialTheme.colorScheme.surfaceContainerHigh
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            TypingDotsAnimated(color = MaterialTheme.colorScheme.primary)
+                                            Text(
+                                                text = if (isGroup) {
+                                                    "${typingUsers.first().displayName} digitando…"
+                                                } else {
+                                                    stringResource(R.string.typing_indicator)
+                                                },
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageBubbleRow(
+    message: ChatMessage,
+    isMine: Boolean,
+    isGroup: Boolean,
+    isFirstInGroup: Boolean,
+    isPlayingAudio: Boolean,
+    audioProgress: Float,
+    onToggleAudio: () -> Unit
+) {
+    if (message.messageType == "SYSTEM") {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f)
+            ) {
+                Text(
+                    text = message.text,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                )
+            }
+        }
+        return
+    }
+
+    val bubbleShape = when {
+        isMine && isFirstInGroup -> Zap2ExpressiveShapes.OutgoingBubbleFirst
+        isMine -> Zap2ExpressiveShapes.OutgoingBubbleGrouped
+        isFirstInGroup -> Zap2ExpressiveShapes.IncomingBubbleFirst
+        else -> Zap2ExpressiveShapes.IncomingBubbleGrouped
+    }
+
+    val bubbleColor = if (isMine) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerHigh
+    }
+    val textColor = if (isMine) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = if (isFirstInGroup) 6.dp else 1.dp),
+        horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start
+    ) {
+        Surface(
+            shape = bubbleShape,
+            color = bubbleColor,
+            tonalElevation = if (isMine) 0.dp else 1.dp,
+            modifier = Modifier.widthIn(min = 84.dp, max = 300.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                if (isGroup && !isMine && isFirstInGroup) {
+                    Text(
+                        text = message.senderName,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                when (message.messageType) {
+                    "IMAGE" -> {
+                        val model: Any? = message.localMediaPath
+                            ?.takeIf { File(it).exists() }
+                            ?: message.mediaUrl
+                        if (model != null) {
+                            AsyncImage(
+                                model = model,
+                                contentDescription = "Imagem enviada",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(200.dp)
+                                    .clip(RoundedCornerShape(16.dp))
+                            )
+                        }
+                        if (message.text.isNotBlank()) {
+                            Text(
+                                text = message.text,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = textColor
+                            )
+                        }
+                    }
+                    "AUDIO" -> {
+                        val seconds = ((message.mediaDurationMs ?: 0L) / 1000L).coerceAtLeast(1L)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clickable(onClick = onToggleAudio)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = if (isPlayingAudio) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                        contentDescription = if (isPlayingAudio) "Pausar áudio" else "Reproduzir áudio",
+                                        tint = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                }
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                LinearProgressIndicator(
+                                    progress = { if (isPlayingAudio) audioProgress else 0f },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(6.dp)
+                                        .clip(CircleShape)
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = textColor.copy(alpha = 0.75f)
+                                )
+                            }
+                        }
+                    }
+                    else -> {
+                        Text(
+                            text = message.text,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = textColor
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.align(Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = formatClockTime(message.createdAt?.toDate()),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = textColor.copy(alpha = 0.65f)
+                    )
+                    if (isMine) {
+                        val isReadByOther = message.readBy.any { it != message.senderId }
+                        Icon(
+                            imageVector = Icons.Rounded.DoneAll,
+                            contentDescription = if (isReadByOther) "Lida" else "Entregue",
+                            tint = if (isReadByOther) ZapReadBlue else textColor.copy(alpha = 0.6f),
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageComposerBar(
+    text: String,
+    onTextChange: (String) -> Unit,
+    onPickImage: () -> Unit,
+    onStartVoiceRecord: () -> Unit,
+    onSendText: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.Bottom,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(28.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier.weight(1f)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 6.dp)
+            ) {
+                IconButton(
+                    onClick = onPickImage,
+                    modifier = Modifier.testTag("pick_image_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.PhotoLibrary,
+                        contentDescription = "Enviar foto",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                TextField(
+                    value = text,
+                    onValueChange = onTextChange,
+                    placeholder = { Text(stringResource(R.string.type_message_hint)) },
+                    maxLines = 4,
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("message_text_input")
+                )
+            }
+        }
+
+        val hasText = text.isNotBlank()
+        Surface(
+            onClick = { if (hasText) onSendText() else onStartVoiceRecord() },
+            shape = RoundedCornerShape(22.dp),
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier
+                .size(52.dp)
+                .testTag(if (hasText) "send_message_button" else "record_voice_button")
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                AnimatedContent(targetState = hasText, label = "send_mic_morph") { showSend ->
+                    Icon(
+                        imageVector = if (showSend) Icons.AutoMirrored.Rounded.Send else Icons.Rounded.Mic,
+                        contentDescription = if (showSend) "Enviar mensagem" else "Gravar áudio",
+                        tint = MaterialTheme.colorScheme.onPrimary
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VoiceRecordingBar(
+    durationMs: Long,
+    amplitude: Float,
+    onDiscard: () -> Unit,
+    onSend: () -> Unit
+) {
+    val secs = durationMs / 1000L
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        IconButton(onClick = onDiscard) {
+            Icon(
+                Icons.Rounded.Delete,
+                contentDescription = "Descartar áudio",
+                tint = MaterialTheme.colorScheme.error
+            )
+        }
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f),
+            modifier = Modifier.weight(1f)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.error)
+                )
+                Text(
+                    text = "${secs / 60}:${(secs % 60).toString().padStart(2, '0')}",
+                    style = MaterialTheme.typography.labelLarge
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                LinearProgressIndicator(
+                    progress = { amplitude },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(8.dp)
+                        .clip(CircleShape)
+                )
+            }
+        }
+        Surface(
+            onClick = onSend,
+            shape = RoundedCornerShape(22.dp),
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(52.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.AutoMirrored.Rounded.Send,
+                    contentDescription = "Enviar áudio",
+                    tint = MaterialTheme.colorScheme.onPrimary
+                )
+            }
+        }
+    }
+}

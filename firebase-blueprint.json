@@ -1,0 +1,212 @@
+{
+  "entities": {
+    "UserPrivate": {
+      "title": "UserPrivate",
+      "description": "Private user profile, phone verification state, FCM token, and cloud backup metadata.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "displayName": { "type": "string", "description": "User display name" },
+        "about": { "type": "string", "description": "Status bio text" },
+        "phoneNumber": { "type": "string", "description": "User E.164 or normalized phone number" },
+        "phoneVerified": { "type": "boolean", "description": "Whether phone was verified via SMS" },
+        "email": { "type": "string", "description": "User email from Google Sign-In" },
+        "photoUrl": { "type": "string", "description": "Profile avatar URL" },
+        "fcmToken": { "type": "string", "description": "Firebase Cloud Messaging device token" },
+        "online": { "type": "boolean", "description": "Current online status" },
+        "lastSeen": { "type": "string", "format": "date-time", "description": "Last seen timestamp (FieldValue.serverTimestamp())" },
+        "lastBackupUrl": { "type": "string", "description": "Download URL or storage path of latest encrypted ZIP backup" },
+        "lastBackupAt": { "type": "string", "format": "date-time", "description": "Timestamp of last cloud backup" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Account creation timestamp (FieldValue.serverTimestamp())" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp (FieldValue.serverTimestamp())" }
+      },
+      "required": ["uid", "displayName", "online", "createdAt", "updatedAt"]
+    },
+    "PublicProfile": {
+      "title": "PublicProfile",
+      "description": "Non-PII user presence and display metadata accessible by exact UID.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "displayName": { "type": "string", "description": "Display name" },
+        "about": { "type": "string", "description": "About status line" },
+        "photoUrl": { "type": "string", "description": "Avatar URL" },
+        "online": { "type": "boolean", "description": "Real-time online indicator" },
+        "lastSeen": { "type": "string", "format": "date-time", "description": "Last active timestamp (FieldValue.serverTimestamp())" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Update timestamp (FieldValue.serverTimestamp())" }
+      },
+      "required": ["uid", "displayName", "online", "updatedAt"]
+    },
+    "PhoneLookup": {
+      "title": "PhoneLookup",
+      "description": "Maps normalized phone digits to a Zap2 UID for contact discovery.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Owner UID" },
+        "displayName": { "type": "string", "description": "Display name" },
+        "photoUrl": { "type": "string", "description": "Avatar URL" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Update timestamp (FieldValue.serverTimestamp())" }
+      },
+      "required": ["uid", "displayName", "updatedAt"]
+    },
+    "ContactEntry": {
+      "title": "ContactEntry",
+      "description": "User's saved contact linking a device or searched contact to a Zap2 UID.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "description": "Owner UID" },
+        "peerUid": { "type": "string", "description": "Target user UID" },
+        "displayName": { "type": "string", "description": "Contact display name" },
+        "phoneNumber": { "type": "string", "description": "Contact phone number" },
+        "photoUrl": { "type": "string", "description": "Contact avatar URL" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp (FieldValue.serverTimestamp())" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Update timestamp (FieldValue.serverTimestamp())" }
+      },
+      "required": ["ownerId", "peerUid", "displayName", "createdAt", "updatedAt"]
+    },
+    "Chat": {
+      "title": "Chat",
+      "description": "Direct 1-on-1 or Group conversation.",
+      "type": "object",
+      "properties": {
+        "chatType": { "type": "string", "enum": ["DIRECT", "GROUP"], "description": "Conversation type" },
+        "title": { "type": "string", "description": "Group name or direct chat label" },
+        "description": { "type": "string", "description": "Group description" },
+        "groupPhotoUrl": { "type": "string", "description": "Group avatar URL" },
+        "createdBy": { "type": "string", "description": "Creator UID" },
+        "participantUids": { "type": "array", "description": "Participant UIDs (max 50)" },
+        "adminUids": { "type": "array", "description": "Admin UIDs (max 50)" },
+        "participantNames": { "type": "object", "description": "Map of UID to display name" },
+        "lastMessageText": { "type": "string", "description": "Latest message preview text" },
+        "lastMessageType": { "type": "string", "enum": ["TEXT", "IMAGE", "AUDIO", "SYSTEM"], "description": "Latest message type" },
+        "lastMessageSenderId": { "type": "string", "description": "Sender UID of latest message" },
+        "lastMessageAt": { "type": "string", "format": "date-time", "description": "Latest message timestamp (FieldValue.serverTimestamp())" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp (FieldValue.serverTimestamp())" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Update timestamp (FieldValue.serverTimestamp())" }
+      },
+      "required": [
+        "chatType",
+        "title",
+        "createdBy",
+        "participantUids",
+        "adminUids",
+        "lastMessageText",
+        "lastMessageType",
+        "lastMessageSenderId",
+        "lastMessageAt",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Real-time text, image, audio, or system message in a chat.",
+      "type": "object",
+      "properties": {
+        "chatId": { "type": "string", "description": "Parent chat ID" },
+        "senderId": { "type": "string", "description": "Sender UID" },
+        "senderName": { "type": "string", "description": "Sender display name" },
+        "participantUids": { "type": "array", "description": "Denormalized chat participant UIDs" },
+        "messageType": { "type": "string", "enum": ["TEXT", "IMAGE", "AUDIO", "SYSTEM"], "description": "Message payload type" },
+        "text": { "type": "string", "description": "Message text body or caption" },
+        "mediaUrl": { "type": "string", "description": "Firebase Storage download URL for image/audio" },
+        "localMediaPath": { "type": "string", "description": "Local cached filename reference" },
+        "mediaDurationMs": { "type": "integer", "description": "Audio duration in milliseconds" },
+        "deliveredTo": { "type": "array", "description": "UIDs that received the message" },
+        "readBy": { "type": "array", "description": "UIDs that read the message" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Send timestamp (FieldValue.serverTimestamp())" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Update timestamp (FieldValue.serverTimestamp())" }
+      },
+      "required": ["chatId", "senderId", "senderName", "participantUids", "messageType", "text", "createdAt", "updatedAt"]
+    },
+    "TypingStatus": {
+      "title": "TypingStatus",
+      "description": "Real-time typing indicator per participant inside a chat.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Typing user UID" },
+        "displayName": { "type": "string", "description": "Typing user display name" },
+        "participantUids": { "type": "array", "description": "Denormalized chat participant UIDs" },
+        "typing": { "type": "boolean", "description": "True while actively typing" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Update timestamp (FieldValue.serverTimestamp())" }
+      },
+      "required": ["uid", "displayName", "participantUids", "typing", "updatedAt"]
+    },
+    "CallSession": {
+      "title": "CallSession",
+      "description": "WebRTC voice/video call signaling session.",
+      "type": "object",
+      "properties": {
+        "callerId": { "type": "string", "description": "Caller UID" },
+        "callerName": { "type": "string", "description": "Caller display name" },
+        "calleeId": { "type": "string", "description": "Callee UID" },
+        "calleeName": { "type": "string", "description": "Callee display name" },
+        "chatId": { "type": "string", "description": "Associated chat ID" },
+        "participantUids": { "type": "array", "description": "Caller and callee UIDs" },
+        "callType": { "type": "string", "enum": ["AUDIO", "VIDEO"], "description": "Call media type" },
+        "status": { "type": "string", "enum": ["RINGING", "CONNECTED", "ENDED", "DECLINED", "MISSED"], "description": "Call lifecycle state" },
+        "offerSdp": { "type": "string", "description": "WebRTC SDP offer" },
+        "answerSdp": { "type": "string", "description": "WebRTC SDP answer" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Call initiation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last signaling update timestamp" }
+      },
+      "required": ["callerId", "callerName", "calleeId", "calleeName", "chatId", "participantUids", "callType", "status", "createdAt", "updatedAt"]
+    },
+    "IceCandidate": {
+      "title": "IceCandidate",
+      "description": "WebRTC ICE candidate exchanged via Firestore subcollections.",
+      "type": "object",
+      "properties": {
+        "senderId": { "type": "string", "description": "Sender UID" },
+        "participantUids": { "type": "array", "description": "Call participant UIDs" },
+        "sdpMid": { "type": "string", "description": "ICE sdpMid" },
+        "sdpMLineIndex": { "type": "integer", "description": "ICE m-line index" },
+        "sdp": { "type": "string", "description": "ICE candidate SDP string" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" }
+      },
+      "required": ["senderId", "participantUids", "sdpMid", "sdpMLineIndex", "sdp", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserPrivate" },
+      "description": "Owner-only user profile and private account metadata"
+    },
+    "/public_profiles/{userId}": {
+      "schema": { "$ref": "#/entities/PublicProfile" },
+      "description": "Public presence and non-PII profile readable by exact UID"
+    },
+    "/phone_lookup/{phoneKey}": {
+      "schema": { "$ref": "#/entities/PhoneLookup" },
+      "description": "Phone digit lookup mapping to UID for contact addition"
+    },
+    "/users/{userId}/contacts/{contactId}": {
+      "schema": { "$ref": "#/entities/ContactEntry" },
+      "description": "Owner's saved contacts subcollection"
+    },
+    "/chats/{chatId}": {
+      "schema": { "$ref": "#/entities/Chat" },
+      "description": "Direct and group chats scoped by participantUids"
+    },
+    "/chats/{chatId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/Message" },
+      "description": "Chat messages subcollection with denormalized participantUids"
+    },
+    "/chats/{chatId}/typing/{typingUid}": {
+      "schema": { "$ref": "#/entities/TypingStatus" },
+      "description": "Real-time typing indicator per participant"
+    },
+    "/calls/{callId}": {
+      "schema": { "$ref": "#/entities/CallSession" },
+      "description": "WebRTC voice/video call signaling sessions"
+    },
+    "/calls/{callId}/callerCandidates/{candId}": {
+      "schema": { "$ref": "#/entities/IceCandidate" },
+      "description": "Caller ICE candidates"
+    },
+    "/calls/{callId}/calleeCandidates/{candId}": {
+      "schema": { "$ref": "#/entities/IceCandidate" },
+      "description": "Callee ICE candidates"
+    }
+  }
+}
