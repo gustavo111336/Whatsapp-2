@@ -52,6 +52,9 @@ interface Zap2Dao {
     @Query("DELETE FROM local_chats")
     suspend fun clearChats()
 
+    @Query("DELETE FROM local_messages WHERE messageId = :messageId")
+    suspend fun deleteMessageById(messageId: String)
+
     @Query("DELETE FROM local_messages")
     suspend fun clearMessages()
 

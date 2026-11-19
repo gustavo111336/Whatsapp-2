@@ -332,6 +332,58 @@ test("Group chats, messages, and typing indicator parity & security", async () =
       updatedAt: new Date(Date.now() - 300),
     })
   );
+
+  // VIDEO message succeeds
+  await assertSucceeds(
+    aliceDb.collection("chats").doc("group_1").collection("messages").doc("msg_vid").set({
+      chatId: "group_1",
+      senderId: ALICE_UID,
+      senderName: "Alice",
+      participantUids: [ALICE_UID, BOB_UID, CHARLIE_UID],
+      messageType: "VIDEO",
+      text: "",
+      mediaUrl: "data:video/mp4;base64," + "A".repeat(1024),
+      mediaDurationMs: 4200,
+      deliveredTo: [ALICE_UID],
+      readBy: [ALICE_UID],
+      createdAt: new Date(Date.now() - 250),
+      updatedAt: new Date(Date.now() - 250),
+    })
+  );
+
+  // Sender Bob can edit his own message; Charlie cannot edit Bob's message
+  await assertSucceeds(
+    bobDb.collection("chats").doc("group_1").collection("messages").doc("msg_1").update({
+      text: "Salve galera editado!",
+      edited: true,
+      editedAt: new Date(Date.now() - 200),
+      updatedAt: new Date(Date.now() - 200),
+    })
+  );
+  await assertFails(
+    charlieDb.collection("chats").doc("group_1").collection("messages").doc("msg_1").update({
+      text: "Hackeado",
+      edited: true,
+      editedAt: new Date(Date.now() - 150),
+      updatedAt: new Date(Date.now() - 150),
+    })
+  );
+
+  // Participant Charlie can delete msg_1 for himself via deletedFor
+  await assertSucceeds(
+    charlieDb.collection("chats").doc("group_1").collection("messages").doc("msg_1").update({
+      deletedFor: [CHARLIE_UID],
+      updatedAt: new Date(Date.now() - 100),
+    })
+  );
+
+  // Sender Bob can hard-delete msg_1 for everyone; Charlie cannot hard-delete Bob's message
+  await assertFails(
+    charlieDb.collection("chats").doc("group_1").collection("messages").doc("msg_1").delete()
+  );
+  await assertSucceeds(
+    bobDb.collection("chats").doc("group_1").collection("messages").doc("msg_1").delete()
+  );
 });
 
 test("WebRTC call signaling lifecycle and terminal state locking", async () => {

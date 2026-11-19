@@ -49,6 +49,9 @@ class ChatDetailViewModel(
     private val _errorBanner = MutableStateFlow<String?>(null)
     val errorBanner: StateFlow<String?> = _errorBanner.asStateFlow()
 
+    private val _editingMessage = MutableStateFlow<ChatMessage?>(null)
+    val editingMessage: StateFlow<ChatMessage?> = _editingMessage.asStateFlow()
+
     private var myDisplayName: String = "Você"
     private var typingTimeoutJob: Job? = null
     private var isCurrentlyMarkedTyping = false
@@ -155,17 +158,66 @@ class ChatDetailViewModel(
         }
     }
 
+    fun startEditingMessage(message: ChatMessage) {
+        if (message.senderId != currentUserId || message.messageType != "TEXT") return
+        _editingMessage.value = message
+        _draftText.value = message.text
+    }
+
+    fun cancelEditing() {
+        _editingMessage.value = null
+        _draftText.value = ""
+    }
+
     fun sendTextMessage() {
         val room = chatRoom.value ?: return
         val text = _draftText.value.trim()
         if (text.isEmpty()) return
+        val targetEdit = _editingMessage.value
         _draftText.value = ""
+        _editingMessage.value = null
         clearTypingStatusNow(room)
 
         viewModelScope.launch {
-            chatRepository.sendTextMessage(room, myDisplayName, text)
+            if (targetEdit != null) {
+                val currentList = (messagesState.value as? UiState.Success)?.data.orEmpty()
+                val isLatest = currentList.lastOrNull()?.id == targetEdit.id
+                chatRepository.editMessage(room, targetEdit, text, isLatest)
+                    .onFailure { err ->
+                        _errorBanner.value = err.localizedMessage ?: "Falha ao editar mensagem."
+                    }
+            } else {
+                chatRepository.sendTextMessage(room, myDisplayName, text)
+                    .onFailure { err ->
+                        _errorBanner.value = err.localizedMessage ?: "Falha ao enviar mensagem."
+                    }
+            }
+        }
+    }
+
+    fun deleteMessageForMe(message: ChatMessage) {
+        viewModelScope.launch {
+            if (_editingMessage.value?.id == message.id) {
+                cancelEditing()
+            }
+            chatRepository.deleteMessageForMe(chatId, message.id)
                 .onFailure { err ->
-                    _errorBanner.value = err.localizedMessage ?: "Falha ao enviar mensagem."
+                    _errorBanner.value = err.localizedMessage ?: "Falha ao apagar mensagem."
+                }
+        }
+    }
+
+    fun deleteMessageForEveryone(message: ChatMessage) {
+        val room = chatRoom.value ?: return
+        viewModelScope.launch {
+            if (_editingMessage.value?.id == message.id) {
+                cancelEditing()
+            }
+            val currentList = (messagesState.value as? UiState.Success)?.data.orEmpty()
+            val remaining = currentList.filter { it.id != message.id }
+            chatRepository.deleteMessageForEveryone(room, message, remaining)
+                .onFailure { err ->
+                    _errorBanner.value = err.localizedMessage ?: "Falha ao apagar mensagem para todos."
                 }
         }
     }
@@ -177,6 +229,18 @@ class ChatDetailViewModel(
             chatRepository.sendImageMessage(room, myDisplayName, uri)
                 .onFailure { err ->
                     _errorBanner.value = err.localizedMessage ?: "Falha ao enviar imagem."
+                }
+            _isSendingMedia.value = false
+        }
+    }
+
+    fun sendVideo(uri: Uri) {
+        val room = chatRoom.value ?: return
+        viewModelScope.launch {
+            _isSendingMedia.value = true
+            chatRepository.sendVideoMessage(room, myDisplayName, uri)
+                .onFailure { err ->
+                    _errorBanner.value = err.localizedMessage ?: "Falha ao enviar vídeo."
                 }
             _isSendingMedia.value = false
         }

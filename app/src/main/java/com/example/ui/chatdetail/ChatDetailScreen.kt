@@ -3,6 +3,7 @@ package com.example.ui.chatdetail
 import android.Manifest
 import android.content.pm.PackageManager
 import android.util.Base64
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -12,8 +13,10 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,16 +40,25 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Send
+import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.Call
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.DeleteForever
 import androidx.compose.material.icons.rounded.DoneAll
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Videocam
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -55,6 +67,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
@@ -70,10 +83,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -100,6 +117,8 @@ fun ChatDetailScreen(
     onStartCall: (callId: String, isVideo: Boolean) -> Unit
 ) {
     val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+    val uriHandler = LocalUriHandler.current
     val chatRoom by viewModel.chatRoom.collectAsStateWithLifecycle()
     val messagesState by viewModel.messagesState.collectAsStateWithLifecycle()
     val typingUsers by viewModel.typingUsers.collectAsStateWithLifecycle()
@@ -107,6 +126,7 @@ fun ChatDetailScreen(
     val draftText by viewModel.draftText.collectAsStateWithLifecycle()
     val isSendingMedia by viewModel.isSendingMedia.collectAsStateWithLifecycle()
     val errorBanner by viewModel.errorBanner.collectAsStateWithLifecycle()
+    val editingMessage by viewModel.editingMessage.collectAsStateWithLifecycle()
 
     val isRecording by viewModel.audioPlayer.isRecording.collectAsStateWithLifecycle()
     val recordingDurationMs by viewModel.audioPlayer.recordingDurationMs.collectAsStateWithLifecycle()
@@ -116,12 +136,23 @@ fun ChatDetailScreen(
 
     val listState = rememberLazyListState()
     var pendingCallIsVideo by remember { mutableStateOf<Boolean?>(null) }
+    var selectedMessageForActions by remember { mutableStateOf<ChatMessage?>(null) }
+    var deleteConfirmMessage by remember { mutableStateOf<ChatMessage?>(null) }
+    var activeVideoFile by remember { mutableStateOf<File?>(null) }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
             viewModel.sendImage(uri)
+        }
+    }
+
+    val videoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.sendVideo(uri)
         }
     }
 
@@ -319,6 +350,14 @@ fun ChatDetailScreen(
                     }
                 }
 
+                val activeEdit = editingMessage
+                if (activeEdit != null && !isRecording) {
+                    EditingMessageBanner(
+                        originalText = activeEdit.text,
+                        onCancel = viewModel::cancelEditing
+                    )
+                }
+
                 if (isRecording) {
                     VoiceRecordingBar(
                         durationMs = recordingDurationMs,
@@ -334,10 +373,16 @@ fun ChatDetailScreen(
                 } else {
                     MessageComposerBar(
                         text = draftText,
+                        isEditing = activeEdit != null,
                         onTextChange = viewModel::onDraftChanged,
                         onPickImage = {
                             photoPickerLauncher.launch(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        onPickVideo = {
+                            videoPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
                             )
                         },
                         onStartVoiceRecord = {
@@ -413,10 +458,18 @@ fun ChatDetailScreen(
                                     isPlayingAudio = playingMessageId == msg.id,
                                     audioProgress = if (playingMessageId == msg.id) playbackProgress else 0f,
                                     onToggleAudio = {
-                                        val localExists = msg.localMediaPath?.let { File(it).exists() } == true
-                                        val source = if (localExists) msg.localMediaPath!! else msg.mediaUrl
+                                        val source = msg.localMediaPath?.takeIf { File(it).exists() } ?: msg.mediaUrl
                                         if (!source.isNullOrBlank()) {
                                             viewModel.audioPlayer.togglePlayback(msg.id, source)
+                                        }
+                                    },
+                                    onPlayVideo = { file -> activeVideoFile = file },
+                                    onOpenUrl = { url ->
+                                        runCatching { uriHandler.openUri(url) }
+                                    },
+                                    onLongClick = {
+                                        if (msg.messageType != "SYSTEM") {
+                                            selectedMessageForActions = msg
                                         }
                                     }
                                 )
@@ -460,8 +513,281 @@ fun ChatDetailScreen(
             }
         }
     }
+
+    val actionMsg = selectedMessageForActions
+    if (actionMsg != null) {
+        val isMine = actionMsg.senderId == viewModel.currentUserId
+        MessageActionsDialog(
+            message = actionMsg,
+            isMine = isMine,
+            onDismiss = { selectedMessageForActions = null },
+            onCopy = {
+                clipboardManager.setText(AnnotatedString(actionMsg.text))
+                selectedMessageForActions = null
+                Toast.makeText(context, "Mensagem copiada", Toast.LENGTH_SHORT).show()
+            },
+            onEdit = {
+                selectedMessageForActions = null
+                viewModel.startEditingMessage(actionMsg)
+            },
+            onRequestDelete = {
+                selectedMessageForActions = null
+                if (isMine) {
+                    deleteConfirmMessage = actionMsg
+                } else {
+                    viewModel.deleteMessageForMe(actionMsg)
+                }
+            }
+        )
+    }
+
+    val delMsg = deleteConfirmMessage
+    if (delMsg != null) {
+        DeleteMessageConfirmDialog(
+            isMine = delMsg.senderId == viewModel.currentUserId,
+            onDismiss = { deleteConfirmMessage = null },
+            onDeleteForMe = {
+                deleteConfirmMessage = null
+                viewModel.deleteMessageForMe(delMsg)
+            },
+            onDeleteForEveryone = {
+                deleteConfirmMessage = null
+                viewModel.deleteMessageForEveryone(delMsg)
+            }
+        )
+    }
+
+    val playingVideo = activeVideoFile
+    if (playingVideo != null) {
+        VideoPlayerDialog(
+            videoFile = playingVideo,
+            onDismiss = { activeVideoFile = null }
+        )
+    }
 }
 
+@Composable
+private fun EditingMessageBanner(
+    originalText: String,
+    onCancel: () -> Unit
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("editing_message_banner")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Edit,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp)
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Editando mensagem",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = originalText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            IconButton(
+                onClick = onCancel,
+                modifier = Modifier.testTag("cancel_edit_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = "Cancelar edição",
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageActionsDialog(
+    message: ChatMessage,
+    isMine: Boolean,
+    onDismiss: () -> Unit,
+    onCopy: () -> Unit,
+    onEdit: () -> Unit,
+    onRequestDelete: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Opções da mensagem") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (message.text.isNotBlank()) {
+                    Text(
+                        text = message.text,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
+                    Surface(
+                        onClick = onCopy,
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("action_copy_message")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(Icons.Rounded.ContentCopy, contentDescription = null)
+                            Text("Copiar", style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+                }
+
+                if (isMine && message.messageType == "TEXT") {
+                    Surface(
+                        onClick = onEdit,
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("action_edit_message")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(Icons.Rounded.Edit, contentDescription = null)
+                            Text("Editar", style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+                }
+
+                Surface(
+                    onClick = onRequestDelete,
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("action_delete_message")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            Icons.Rounded.Delete,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                        Text(
+                            text = if (isMine) "Apagar" else "Apagar para mim",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Fechar")
+            }
+        }
+    )
+}
+
+@Composable
+private fun DeleteMessageConfirmDialog(
+    isMine: Boolean,
+    onDismiss: () -> Unit,
+    onDeleteForMe: () -> Unit,
+    onDeleteForEveryone: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Apagar mensagem?") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "A mensagem será removida sem deixar rastros na conversa.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Surface(
+                    onClick = onDeleteForMe,
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("delete_for_me_button")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(Icons.Rounded.Delete, contentDescription = null)
+                        Text("Apagar para mim", style = MaterialTheme.typography.bodyLarge)
+                    }
+                }
+                if (isMine) {
+                    Surface(
+                        onClick = onDeleteForEveryone,
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("delete_for_everyone_button")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(
+                                Icons.Rounded.DeleteForever,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                            Text(
+                                "Apagar para todos",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancelar")
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MessageBubbleRow(
     message: ChatMessage,
@@ -470,7 +796,10 @@ private fun MessageBubbleRow(
     isFirstInGroup: Boolean,
     isPlayingAudio: Boolean,
     audioProgress: Float,
-    onToggleAudio: () -> Unit
+    onToggleAudio: () -> Unit,
+    onPlayVideo: (File) -> Unit,
+    onOpenUrl: (String) -> Unit,
+    onLongClick: () -> Unit
 ) {
     if (message.messageType == "SYSTEM") {
         Box(
@@ -511,6 +840,14 @@ private fun MessageBubbleRow(
     } else {
         MaterialTheme.colorScheme.onSurface
     }
+    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val linkBlue = if (isDark) Color(0xFF64B5F6) else Color(0xFF1565C0)
+    val ytInfo = remember(message.id, message.text) {
+        if (message.text.isNotBlank()) extractFirstYouTubeInfo(message.text) else null
+    }
+    val annotatedBody = remember(message.id, message.text, linkBlue) {
+        if (message.text.isNotBlank()) buildMessageAnnotatedText(message.text, linkBlue) else null
+    }
 
     Row(
         modifier = Modifier
@@ -522,7 +859,13 @@ private fun MessageBubbleRow(
             shape = bubbleShape,
             color = bubbleColor,
             tonalElevation = if (isMine) 0.dp else 1.dp,
-            modifier = Modifier.widthIn(min = 84.dp, max = 300.dp)
+            modifier = Modifier
+                .widthIn(min = 84.dp, max = 300.dp)
+                .clip(bubbleShape)
+                .combinedClickable(
+                    onClick = {},
+                    onLongClick = onLongClick
+                )
         ) {
             Column(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -561,11 +904,22 @@ private fun MessageBubbleRow(
                                     .clip(RoundedCornerShape(16.dp))
                             )
                         }
-                        if (message.text.isNotBlank()) {
+                        if (annotatedBody != null) {
                             Text(
-                                text = message.text,
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = textColor
+                                text = annotatedBody,
+                                style = MaterialTheme.typography.bodyLarge.copy(color = textColor)
+                            )
+                        }
+                    }
+                    "VIDEO" -> {
+                        VideoMessageBubbleContent(
+                            message = message,
+                            onPlayVideo = onPlayVideo
+                        )
+                        if (annotatedBody != null) {
+                            Text(
+                                text = annotatedBody,
+                                style = MaterialTheme.typography.bodyLarge.copy(color = textColor)
                             )
                         }
                     }
@@ -611,12 +965,21 @@ private fun MessageBubbleRow(
                         }
                     }
                     else -> {
-                        Text(
-                            text = message.text,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = textColor
-                        )
+                        if (annotatedBody != null) {
+                            Text(
+                                text = annotatedBody,
+                                style = MaterialTheme.typography.bodyLarge.copy(color = textColor)
+                            )
+                        }
                     }
+                }
+
+                if (ytInfo != null) {
+                    YouTubePreviewCard(
+                        info = ytInfo,
+                        onOpenUrl = onOpenUrl,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
                 }
 
                 Row(
@@ -624,6 +987,13 @@ private fun MessageBubbleRow(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
+                    if (message.edited) {
+                        Text(
+                            text = "Editada",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = textColor.copy(alpha = 0.65f)
+                        )
+                    }
                     Text(
                         text = formatClockTime(message.createdAt?.toDate()),
                         style = MaterialTheme.typography.labelSmall,
@@ -647,11 +1017,15 @@ private fun MessageBubbleRow(
 @Composable
 private fun MessageComposerBar(
     text: String,
+    isEditing: Boolean,
     onTextChange: (String) -> Unit,
     onPickImage: () -> Unit,
+    onPickVideo: () -> Unit,
     onStartVoiceRecord: () -> Unit,
     onSendText: () -> Unit
 ) {
+    var showAttachMenu by remember { mutableStateOf(false) }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -668,15 +1042,44 @@ private fun MessageComposerBar(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(horizontal = 6.dp)
             ) {
-                IconButton(
-                    onClick = onPickImage,
-                    modifier = Modifier.testTag("pick_image_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.PhotoLibrary,
-                        contentDescription = "Enviar foto",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                Box {
+                    IconButton(
+                        onClick = { showAttachMenu = true },
+                        modifier = Modifier.testTag("pick_image_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.AttachFile,
+                            contentDescription = "Enviar foto ou vídeo",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = showAttachMenu,
+                        onDismissRequest = { showAttachMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Foto") },
+                            leadingIcon = {
+                                Icon(Icons.Rounded.PhotoLibrary, contentDescription = null)
+                            },
+                            onClick = {
+                                showAttachMenu = false
+                                onPickImage()
+                            },
+                            modifier = Modifier.testTag("pick_photo_menu_item")
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Vídeo (até 540 KB grátis)") },
+                            leadingIcon = {
+                                Icon(Icons.Rounded.Videocam, contentDescription = null)
+                            },
+                            onClick = {
+                                showAttachMenu = false
+                                onPickVideo()
+                            },
+                            modifier = Modifier.testTag("pick_video_menu_item")
+                        )
+                    }
                 }
                 TextField(
                     value = text,
@@ -706,10 +1109,18 @@ private fun MessageComposerBar(
                 .testTag(if (hasText) "send_message_button" else "record_voice_button")
         ) {
             Box(contentAlignment = Alignment.Center) {
-                AnimatedContent(targetState = hasText, label = "send_mic_morph") { showSend ->
+                AnimatedContent(targetState = Pair(hasText, isEditing), label = "send_mic_morph") { (showSend, editing) ->
                     Icon(
-                        imageVector = if (showSend) Icons.AutoMirrored.Rounded.Send else Icons.Rounded.Mic,
-                        contentDescription = if (showSend) "Enviar mensagem" else "Gravar áudio",
+                        imageVector = when {
+                            showSend && editing -> Icons.Rounded.Check
+                            showSend -> Icons.AutoMirrored.Rounded.Send
+                            else -> Icons.Rounded.Mic
+                        },
+                        contentDescription = when {
+                            showSend && editing -> "Salvar edição"
+                            showSend -> "Enviar mensagem"
+                            else -> "Gravar áudio"
+                        },
                         tint = MaterialTheme.colorScheme.onPrimary
                     )
                 }

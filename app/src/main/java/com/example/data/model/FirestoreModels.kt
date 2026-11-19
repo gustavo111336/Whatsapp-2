@@ -110,6 +110,9 @@ data class ChatMessage(
     val mediaDurationMs: Long? = null,
     val deliveredTo: List<String> = emptyList(),
     val readBy: List<String> = emptyList(),
+    val edited: Boolean = false,
+    @ServerTimestamp val editedAt: Timestamp? = null,
+    val deletedFor: List<String> = emptyList(),
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 )

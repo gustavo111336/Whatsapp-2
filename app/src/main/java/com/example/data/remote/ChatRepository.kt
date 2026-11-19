@@ -3,6 +3,7 @@ package com.example.data.remote
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Base64
 import android.util.Log
@@ -134,10 +135,16 @@ class ChatRepository(
                 .whereArrayContains("participantUids", uid)
                 .snapshots()
                 .map { snapshot ->
-                    val msgs = snapshot.toObjects(
+                    val allMsgs = snapshot.toObjects(
                         ChatMessage::class.java,
                         DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
-                    ).sortedBy { it.createdAt?.toDate()?.time ?: Long.MAX_VALUE }
+                    )
+                    val hiddenIds = allMsgs.filter { uid in it.deletedFor }.map { it.id }
+                    hiddenIds.forEach { dao.deleteMessageById(it) }
+
+                    val msgs = allMsgs
+                        .filter { uid !in it.deletedFor }
+                        .sortedBy { it.createdAt?.toDate()?.time ?: Long.MAX_VALUE }
 
                     dao.upsertMessages(
                         msgs.map { m ->
@@ -758,6 +765,239 @@ class ChatRepository(
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.CREATE, "chats/${chat.id}/messages/$msgId")
             Result.failure(e)
+        }
+    }
+
+    suspend fun sendVideoMessage(
+        chat: ChatRoom,
+        senderName: String,
+        videoUri: Uri,
+        caption: String = ""
+    ): Result<Unit> {
+        val uid = try {
+            requireUserId()
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+        val msgId = UUID.randomUUID().toString().replace("-", "")
+        return try {
+            val (localFile, durationMs, videoBytes) = withContext(Dispatchers.IO) {
+                val dest = File(mediaDir, "vid_${chat.id}_$msgId.mp4")
+                context.contentResolver.openInputStream(videoUri)?.use { input ->
+                    dest.outputStream().use { output -> input.copyTo(output) }
+                } ?: throw IllegalStateException("Não foi possível ler o vídeo selecionado.")
+
+                val dur = readVideoDurationMs(dest)
+                Triple(dest, dur, dest.readBytes())
+            }
+
+            val mediaUrl = if (videoBytes.size <= MAX_INLINE_MEDIA_BYTES) {
+                "data:video/mp4;base64,${Base64.encodeToString(videoBytes, Base64.NO_WRAP)}"
+            } else {
+                val storageRef = storage.reference.child("chats/${chat.id}/media/${localFile.name}")
+                try {
+                    storage.maxUploadRetryTimeMillis = 4_000L
+                    storageRef.putFile(Uri.fromFile(localFile)).await()
+                    storageRef.downloadUrl.await().toString()
+                } catch (storageEx: Exception) {
+                    Log.w(TAG, "Firebase Storage video upload unavailable: ${storageEx.message}")
+                    localFile.delete()
+                    return Result.failure(
+                        IllegalStateException(
+                            "Vídeo maior que 540 KB exige Firebase Storage (plano Blaze). Selecione um clipe menor/mais curto para envio gratuito."
+                        )
+                    )
+                }
+            }
+
+            val previewText = caption.trim().ifBlank { "🎬 Vídeo" }.take(500)
+            val payload = mutableMapOf<String, Any?>(
+                "chatId" to chat.id,
+                "senderId" to uid,
+                "senderName" to senderName.take(80).ifBlank { "Você" },
+                "participantUids" to chat.participantUids,
+                "messageType" to "VIDEO",
+                "text" to caption.trim().take(4000),
+                "mediaUrl" to mediaUrl.take(MAX_MEDIA_URL_LENGTH),
+                "localMediaPath" to localFile.absolutePath.take(500),
+                "mediaDurationMs" to durationMs.coerceAtLeast(0L),
+                "deliveredTo" to listOf(uid),
+                "readBy" to listOf(uid),
+                "createdAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp()
+            ).filterValues { it != null } as Map<String, Any>
+
+            db.collection("chats").document(chat.id)
+                .collection("messages").document(msgId)
+                .set(payload)
+                .await()
+
+            db.collection("chats").document(chat.id).update(
+                mapOf(
+                    "lastMessageText" to previewText,
+                    "lastMessageType" to "VIDEO",
+                    "lastMessageSenderId" to uid,
+                    "lastMessageAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, "chats/${chat.id}/messages/$msgId")
+            Result.failure(e)
+        }
+    }
+
+    suspend fun editMessage(
+        chat: ChatRoom,
+        message: ChatMessage,
+        newText: String,
+        isLatestMessage: Boolean
+    ): Result<Unit> {
+        val uid = try {
+            requireUserId()
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+        if (message.senderId != uid) {
+            return Result.failure(IllegalStateException("Você só pode editar suas próprias mensagens."))
+        }
+        val cleanText = newText.trim().take(4000)
+        if (message.messageType == "TEXT" && cleanText.isEmpty()) {
+            return Result.failure(IllegalArgumentException("A mensagem não pode ficar vazia."))
+        }
+        val msgPath = "chats/${chat.id}/messages/${message.id}"
+        return try {
+            db.collection("chats").document(chat.id)
+                .collection("messages").document(message.id)
+                .update(
+                    mapOf(
+                        "text" to cleanText,
+                        "edited" to true,
+                        "editedAt" to FieldValue.serverTimestamp(),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+                .await()
+
+            if (isLatestMessage) {
+                val preview = when (message.messageType) {
+                    "IMAGE" -> cleanText.ifBlank { "📷 Foto" }
+                    "VIDEO" -> cleanText.ifBlank { "🎬 Vídeo" }
+                    "AUDIO" -> "🎤 Mensagem de voz"
+                    else -> cleanText
+                }.take(500)
+                db.collection("chats").document(chat.id).update(
+                    mapOf(
+                        "lastMessageText" to preview,
+                        "lastMessageType" to message.messageType,
+                        "lastMessageSenderId" to uid,
+                        "lastMessageAt" to (message.createdAt ?: FieldValue.serverTimestamp()),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, msgPath)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteMessageForMe(chatId: String, messageId: String): Result<Unit> {
+        val uid = try {
+            requireUserId()
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+        val msgPath = "chats/$chatId/messages/$messageId"
+        return try {
+            db.collection("chats").document(chatId)
+                .collection("messages").document(messageId)
+                .update(
+                    mapOf(
+                        "deletedFor" to FieldValue.arrayUnion(uid),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+                .await()
+            dao.deleteMessageById(messageId)
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, msgPath)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteMessageForEveryone(
+        chat: ChatRoom,
+        message: ChatMessage,
+        remainingMessagesAfterDelete: List<ChatMessage>
+    ): Result<Unit> {
+        val uid = try {
+            requireUserId()
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+        if (message.senderId != uid) {
+            return Result.failure(IllegalStateException("Você só pode apagar para todos as suas próprias mensagens."))
+        }
+        val msgPath = "chats/${chat.id}/messages/${message.id}"
+        return try {
+            db.collection("chats").document(chat.id)
+                .collection("messages").document(message.id)
+                .delete()
+                .await()
+
+            dao.deleteMessageById(message.id)
+            message.localMediaPath?.let { path ->
+                runCatching { File(path).delete() }
+            }
+
+            // Update chat preview cleanly to the previous message (or blank), leaving zero trace
+            val fallback = remainingMessagesAfterDelete.lastOrNull()
+            val previewText = when (fallback?.messageType) {
+                null -> ""
+                "IMAGE" -> fallback.text.ifBlank { "📷 Foto" }
+                "VIDEO" -> fallback.text.ifBlank { "🎬 Vídeo" }
+                "AUDIO" -> "🎤 Mensagem de voz"
+                else -> fallback.text
+            }.take(500)
+
+            db.collection("chats").document(chat.id).update(
+                mapOf(
+                    "lastMessageText" to previewText,
+                    "lastMessageType" to (fallback?.messageType ?: "TEXT"),
+                    "lastMessageSenderId" to (fallback?.senderId ?: uid),
+                    "lastMessageAt" to (fallback?.createdAt ?: chat.createdAt ?: FieldValue.serverTimestamp()),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, msgPath)
+            Result.failure(e)
+        }
+    }
+
+    private fun readVideoDurationMs(file: File): Long {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(file.absolutePath)
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+        } catch (_: Exception) {
+            0L
+        } finally {
+            runCatching { retriever.release() }
         }
     }
 

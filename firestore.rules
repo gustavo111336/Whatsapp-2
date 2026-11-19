@@ -94,7 +94,7 @@ service cloud.firestore {
              isValidStringList(data.participantUids, 1, 50) &&
              isValidStringList(data.adminUids, 1, 50) &&
              data.lastMessageText is string && data.lastMessageText.size() <= 500 &&
-             data.lastMessageType in ['TEXT', 'IMAGE', 'AUDIO', 'SYSTEM'] &&
+             data.lastMessageType in ['TEXT', 'IMAGE', 'VIDEO', 'AUDIO', 'SYSTEM'] &&
              data.lastMessageSenderId is string && data.lastMessageSenderId.size() <= 128 &&
              isValidTimestamp(data.lastMessageAt) &&
              isValidTimestamp(data.createdAt) &&
@@ -109,7 +109,7 @@ service cloud.firestore {
              data.senderId is string && data.senderId.size() >= 1 && data.senderId.size() <= 128 &&
              data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80 &&
              isValidStringList(data.participantUids, 1, 50) &&
-             data.messageType in ['TEXT', 'IMAGE', 'AUDIO', 'SYSTEM'] &&
+             data.messageType in ['TEXT', 'IMAGE', 'VIDEO', 'AUDIO', 'SYSTEM'] &&
              data.text is string && data.text.size() <= 4000 &&
              isValidTimestamp(data.createdAt) &&
              isValidTimestamp(data.updatedAt) &&
@@ -117,7 +117,10 @@ service cloud.firestore {
              (!('localMediaPath' in data) || (data.localMediaPath is string && data.localMediaPath.size() <= 500)) &&
              (!('mediaDurationMs' in data) || (data.mediaDurationMs is int && data.mediaDurationMs >= 0)) &&
              (!('deliveredTo' in data) || isValidStringList(data.deliveredTo, 0, 50)) &&
-             (!('readBy' in data) || isValidStringList(data.readBy, 0, 50));
+             (!('readBy' in data) || isValidStringList(data.readBy, 0, 50)) &&
+             (!('edited' in data) || data.edited is bool) &&
+             (!('editedAt' in data) || isValidTimestamp(data.editedAt)) &&
+             (!('deletedFor' in data) || isValidStringList(data.deletedFor, 0, 50));
     }
 
     function isValidTypingState(data) {
@@ -308,7 +311,8 @@ service cloud.firestore {
                          incoming().keys().hasOnly([
                            'chatId', 'senderId', 'senderName', 'participantUids',
                            'messageType', 'text', 'mediaUrl', 'localMediaPath',
-                           'mediaDurationMs', 'deliveredTo', 'readBy', 'createdAt', 'updatedAt'
+                           'mediaDurationMs', 'deliveredTo', 'readBy',
+                           'edited', 'editedAt', 'deletedFor', 'createdAt', 'updatedAt'
                          ]) &&
                          isValidMessage(incoming()) &&
                          exists(/databases/$(database)/documents/chats/$(chatId)) &&
@@ -319,9 +323,13 @@ service cloud.firestore {
                          (request.auth.uid in existing().participantUids) &&
                          incoming().chatId == existing().chatId &&
                          incoming().senderId == existing().senderId &&
+                         incoming().messageType == existing().messageType &&
                          incoming().createdAt == existing().createdAt &&
-                         isValidMessage(incoming()) &&
-                         incoming().diff(existing()).affectedKeys().hasOnly(['deliveredTo', 'readBy', 'updatedAt']);
+                         isValidMessage(incoming()) && (
+                           incoming().diff(existing()).affectedKeys().hasOnly(['deliveredTo', 'readBy', 'deletedFor', 'updatedAt']) ||
+                           (existing().senderId == request.auth.uid &&
+                            incoming().diff(existing()).affectedKeys().hasOnly(['text', 'edited', 'editedAt', 'updatedAt']))
+                         );
         allow delete: if isSignedIn() && isValidId(chatId) && isValidId(messageId) && existing().senderId == request.auth.uid;
       }
 
