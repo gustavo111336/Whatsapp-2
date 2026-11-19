@@ -109,7 +109,7 @@
         "participantUids": { "type": "array", "description": "Denormalized chat participant UIDs" },
         "messageType": { "type": "string", "enum": ["TEXT", "IMAGE", "AUDIO", "SYSTEM"], "description": "Message payload type" },
         "text": { "type": "string", "description": "Message text body or caption" },
-        "mediaUrl": { "type": "string", "description": "Firebase Storage download URL for image/audio" },
+        "mediaUrl": { "type": "string", "description": "Inline data URL or Storage download URL for image/audio (max 800KB)" },
         "localMediaPath": { "type": "string", "description": "Local cached filename reference" },
         "mediaDurationMs": { "type": "integer", "description": "Audio duration in milliseconds" },
         "deliveredTo": { "type": "array", "description": "UIDs that received the message" },

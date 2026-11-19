@@ -113,7 +113,7 @@ service cloud.firestore {
              data.text is string && data.text.size() <= 4000 &&
              isValidTimestamp(data.createdAt) &&
              isValidTimestamp(data.updatedAt) &&
-             (!('mediaUrl' in data) || (data.mediaUrl is string && data.mediaUrl.size() <= 1000)) &&
+             (!('mediaUrl' in data) || (data.mediaUrl is string && data.mediaUrl.size() <= 800000)) &&
              (!('localMediaPath' in data) || (data.localMediaPath is string && data.localMediaPath.size() <= 500)) &&
              (!('mediaDurationMs' in data) || (data.mediaDurationMs is int && data.mediaDurationMs >= 0)) &&
              (!('deliveredTo' in data) || isValidStringList(data.deliveredTo, 0, 50)) &&

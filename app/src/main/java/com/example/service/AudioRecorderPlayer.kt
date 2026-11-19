@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.os.Build
+import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -56,8 +57,8 @@ class AudioRecorderPlayer(private val context: Context) {
             mr.setAudioSource(MediaRecorder.AudioSource.MIC)
             mr.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             mr.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            mr.setAudioEncodingBitRate(96_000)
-            mr.setAudioSamplingRate(44_100)
+            mr.setAudioEncodingBitRate(48_000)
+            mr.setAudioSamplingRate(22_050)
             mr.setOutputFile(outFile.absolutePath)
             mr.prepare()
             mr.start()
@@ -122,8 +123,19 @@ class AudioRecorderPlayer(private val context: Context) {
         }
         stopPlayback()
         try {
+            val resolvedSource = if (sourcePathOrUrl.startsWith("data:audio/")) {
+                val base64Part = sourcePathOrUrl.substringAfter(",", "")
+                val audioBytes = Base64.decode(base64Part, Base64.DEFAULT)
+                val cachedAudio = File(context.cacheDir, "play_$messageId.m4a")
+                if (!cachedAudio.exists() || cachedAudio.length() != audioBytes.size.toLong()) {
+                    cachedAudio.writeBytes(audioBytes)
+                }
+                cachedAudio.absolutePath
+            } else {
+                sourcePathOrUrl
+            }
             val mp = MediaPlayer().apply {
-                setDataSource(sourcePathOrUrl)
+                setDataSource(resolvedSource)
                 setOnPreparedListener { player ->
                     player.start()
                     _playingMessageId.value = messageId

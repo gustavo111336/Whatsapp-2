@@ -2,6 +2,7 @@ package com.example.ui.chatdetail
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -538,9 +539,17 @@ private fun MessageBubbleRow(
 
                 when (message.messageType) {
                     "IMAGE" -> {
-                        val model: Any? = message.localMediaPath
-                            ?.takeIf { File(it).exists() }
-                            ?: message.mediaUrl
+                        val model: Any? = remember(message.id, message.localMediaPath, message.mediaUrl) {
+                            val localFile = message.localMediaPath?.takeIf { File(it).exists() }
+                            when {
+                                localFile != null -> localFile
+                                message.mediaUrl?.startsWith("data:image/") == true -> {
+                                    val b64 = message.mediaUrl.substringAfter(",", "")
+                                    runCatching { Base64.decode(b64, Base64.DEFAULT) }.getOrNull()
+                                }
+                                else -> message.mediaUrl
+                            }
+                        }
                         if (model != null) {
                             AsyncImage(
                                 model = model,

@@ -300,6 +300,38 @@ test("Group chats, messages, and typing indicator parity & security", async () =
       updatedAt: new Date(Date.now() - 500),
     })
   );
+
+  // Inline compressed image data URL succeeds; oversized >800,000 chars fails
+  await assertSucceeds(
+    aliceDb.collection("chats").doc("group_1").collection("messages").doc("msg_img").set({
+      chatId: "group_1",
+      senderId: ALICE_UID,
+      senderName: "Alice",
+      participantUids: [ALICE_UID, BOB_UID, CHARLIE_UID],
+      messageType: "IMAGE",
+      text: "",
+      mediaUrl: "data:image/jpeg;base64," + "A".repeat(2048),
+      deliveredTo: [ALICE_UID],
+      readBy: [ALICE_UID],
+      createdAt: new Date(Date.now() - 400),
+      updatedAt: new Date(Date.now() - 400),
+    })
+  );
+  await assertFails(
+    aliceDb.collection("chats").doc("group_1").collection("messages").doc("msg_too_big").set({
+      chatId: "group_1",
+      senderId: ALICE_UID,
+      senderName: "Alice",
+      participantUids: [ALICE_UID, BOB_UID, CHARLIE_UID],
+      messageType: "IMAGE",
+      text: "",
+      mediaUrl: "data:image/jpeg;base64," + "A".repeat(800100),
+      deliveredTo: [ALICE_UID],
+      readBy: [ALICE_UID],
+      createdAt: new Date(Date.now() - 300),
+      updatedAt: new Date(Date.now() - 300),
+    })
+  );
 });
 
 test("WebRTC call signaling lifecycle and terminal state locking", async () => {

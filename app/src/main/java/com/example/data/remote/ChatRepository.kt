@@ -1,8 +1,12 @@
 package com.example.data.remote
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
+import android.util.Base64
 import android.util.Log
+import java.io.ByteArrayOutputStream
 import com.example.R
 import com.example.data.local.LocalChatEntity
 import com.example.data.local.LocalMessageEntity
@@ -617,25 +621,29 @@ class ChatRepository(
         }
         val msgId = UUID.randomUUID().toString().replace("-", "")
         return try {
-            val localFile = withContext(Dispatchers.IO) {
+            val (localFile, compressedBytes) = withContext(Dispatchers.IO) {
                 val dest = File(mediaDir, "img_${chat.id}_$msgId.jpg")
-                context.contentResolver.openInputStream(imageUri)?.use { input ->
-                    dest.outputStream().use { output -> input.copyTo(output) }
-                } ?: throw IllegalStateException("Não foi possível ler a imagem selecionada.")
-                dest
+                val bytes = compressUriToJpegBytes(imageUri)
+                dest.writeBytes(bytes)
+                dest to bytes
             }
 
-            val storageRef = storage.reference.child("chats/${chat.id}/media/${localFile.name}")
-            val downloadUrl = try {
-                storageRef.putFile(Uri.fromFile(localFile)).await()
-                storageRef.downloadUrl.await().toString()
-            } catch (storageEx: Exception) {
-                Log.w(TAG, "Firebase Storage upload unavailable: ${storageEx.message}")
-                return Result.failure(
-                    IllegalStateException(
-                        "Falha ao enviar mídia para o Firebase Storage: ${storageEx.localizedMessage ?: "verifique as regras de Storage no Console do Firebase."}"
+            val mediaUrl = if (compressedBytes.size <= MAX_INLINE_MEDIA_BYTES) {
+                "data:image/jpeg;base64,${Base64.encodeToString(compressedBytes, Base64.NO_WRAP)}"
+            } else {
+                val storageRef = storage.reference.child("chats/${chat.id}/media/${localFile.name}")
+                try {
+                    storage.maxUploadRetryTimeMillis = 4_000L
+                    storageRef.putFile(Uri.fromFile(localFile)).await()
+                    storageRef.downloadUrl.await().toString()
+                } catch (storageEx: Exception) {
+                    Log.w(TAG, "Firebase Storage upload unavailable: ${storageEx.message}")
+                    return Result.failure(
+                        IllegalStateException(
+                            "A imagem ainda ficou grande para envio gratuito pelo Firestore. Tente outra foto menor."
+                        )
                     )
-                )
+                }
             }
 
             val previewText = caption.trim().ifBlank { "📷 Foto" }.take(500)
@@ -646,7 +654,7 @@ class ChatRepository(
                 "participantUids" to chat.participantUids,
                 "messageType" to "IMAGE",
                 "text" to caption.trim().take(4000),
-                "mediaUrl" to downloadUrl.take(1000),
+                "mediaUrl" to mediaUrl.take(MAX_MEDIA_URL_LENGTH),
                 "localMediaPath" to localFile.absolutePath.take(500),
                 "deliveredTo" to listOf(uid),
                 "readBy" to listOf(uid),
@@ -690,23 +698,28 @@ class ChatRepository(
         }
         val msgId = UUID.randomUUID().toString().replace("-", "")
         return try {
-            val savedLocal = withContext(Dispatchers.IO) {
+            val (savedLocal, audioBytes) = withContext(Dispatchers.IO) {
                 val dest = File(mediaDir, "aud_${chat.id}_$msgId.m4a")
                 audioFile.copyTo(dest, overwrite = true)
-                dest
+                dest to dest.readBytes()
             }
 
-            val storageRef = storage.reference.child("chats/${chat.id}/media/${savedLocal.name}")
-            val downloadUrl = try {
-                storageRef.putFile(Uri.fromFile(savedLocal)).await()
-                storageRef.downloadUrl.await().toString()
-            } catch (storageEx: Exception) {
-                Log.w(TAG, "Firebase Storage audio upload unavailable: ${storageEx.message}")
-                return Result.failure(
-                    IllegalStateException(
-                        "Falha ao enviar áudio para o Firebase Storage: ${storageEx.localizedMessage ?: "verifique as regras de Storage no Console."}"
+            val mediaUrl = if (audioBytes.size <= MAX_INLINE_MEDIA_BYTES) {
+                "data:audio/mp4;base64,${Base64.encodeToString(audioBytes, Base64.NO_WRAP)}"
+            } else {
+                val storageRef = storage.reference.child("chats/${chat.id}/media/${savedLocal.name}")
+                try {
+                    storage.maxUploadRetryTimeMillis = 4_000L
+                    storageRef.putFile(Uri.fromFile(savedLocal)).await()
+                    storageRef.downloadUrl.await().toString()
+                } catch (storageEx: Exception) {
+                    Log.w(TAG, "Firebase Storage audio upload unavailable: ${storageEx.message}")
+                    return Result.failure(
+                        IllegalStateException(
+                            "Áudio muito longo para envio gratuito pelo Firestore (limite ~60s). Grave uma mensagem mais curta."
+                        )
                     )
-                )
+                }
             }
 
             val payload = mapOf(
@@ -716,7 +729,7 @@ class ChatRepository(
                 "participantUids" to chat.participantUids,
                 "messageType" to "AUDIO",
                 "text" to "",
-                "mediaUrl" to downloadUrl.take(1000),
+                "mediaUrl" to mediaUrl.take(MAX_MEDIA_URL_LENGTH),
                 "localMediaPath" to savedLocal.absolutePath.take(500),
                 "mediaDurationMs" to durationMs.coerceAtLeast(0L),
                 "deliveredTo" to listOf(uid),
@@ -748,6 +761,55 @@ class ChatRepository(
         }
     }
 
+    private fun compressUriToJpegBytes(imageUri: Uri): ByteArray {
+        val rawTemp = File(context.cacheDir, "tmp_img_${UUID.randomUUID()}.bin")
+        try {
+            context.contentResolver.openInputStream(imageUri)?.use { input ->
+                rawTemp.outputStream().use { output -> input.copyTo(output) }
+            } ?: throw IllegalStateException("Não foi possível ler a imagem selecionada.")
+
+            val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(rawTemp.absolutePath, boundsOpts)
+
+            val maxDim = 840
+            var sampleSize = 1
+            while (boundsOpts.outWidth / sampleSize > maxDim * 2 || boundsOpts.outHeight / sampleSize > maxDim * 2) {
+                sampleSize *= 2
+            }
+
+            val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            val decoded = BitmapFactory.decodeFile(rawTemp.absolutePath, decodeOpts)
+                ?: throw IllegalStateException("Arquivo selecionado não é uma imagem válida.")
+
+            val scaled = if (decoded.width > maxDim || decoded.height > maxDim) {
+                val ratio = minOf(maxDim.toFloat() / decoded.width, maxDim.toFloat() / decoded.height)
+                val targetW = (decoded.width * ratio).toInt().coerceAtLeast(1)
+                val targetH = (decoded.height * ratio).toInt().coerceAtLeast(1)
+                Bitmap.createScaledBitmap(decoded, targetW, targetH, true).also {
+                    if (it !== decoded) decoded.recycle()
+                }
+            } else {
+                decoded
+            }
+
+            try {
+                for (quality in listOf(72, 55, 40, 28)) {
+                    val out = ByteArrayOutputStream()
+                    scaled.compress(Bitmap.CompressFormat.JPEG, quality, out)
+                    val bytes = out.toByteArray()
+                    if (bytes.size <= 420_000 || quality == 28) {
+                        return bytes
+                    }
+                }
+                return ByteArray(0)
+            } finally {
+                scaled.recycle()
+            }
+        } finally {
+            rawTemp.delete()
+        }
+    }
+
     suspend fun markMessagesRead(chatId: String, uid: String, messages: List<ChatMessage>) {
         val unread = messages.filter { it.senderId != uid && uid !in it.readBy }
         if (unread.isEmpty()) return
@@ -775,5 +837,7 @@ class ChatRepository(
 
     private companion object {
         const val TAG = "ChatRepository"
+        const val MAX_INLINE_MEDIA_BYTES = 540_000
+        const val MAX_MEDIA_URL_LENGTH = 780_000
     }
 }

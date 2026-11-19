@@ -284,11 +284,12 @@ class BackupRepository(
             throw e
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.UPDATE, "users/$uid")
-            Result.failure(
-                IllegalStateException(
-                    "Falha no backup em nuvem (Firebase Storage): ${e.localizedMessage ?: "verifique se o Firebase Storage está ativado no Console."}"
-                )
-            )
+            val msg = if (e.message?.contains("not exist", ignoreCase = true) == true) {
+                "Backup na nuvem requer Firebase Storage (plano Blaze). Use o Backup Local (.zip) acima gratuitamente!"
+            } else {
+                "Falha no backup em nuvem: ${e.localizedMessage ?: "verifique sua conexão."}"
+            }
+            Result.failure(IllegalStateException(msg))
         }
     }
 
