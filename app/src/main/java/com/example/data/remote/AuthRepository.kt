@@ -150,17 +150,21 @@ class AuthRepository(
             }
 
             override fun onVerificationFailed(e: FirebaseException) {
-                Log.w(TAG, "Phone verification failed: ${e.message}", e)
-                val isDisabled = (e as? FirebaseAuthException)?.errorCode == "ERROR_OPERATION_NOT_ALLOWED" ||
-                    e.message?.contains("not allowed", ignoreCase = true) == true ||
-                    e.message?.contains("não é permitida", ignoreCase = true) == true
-                val friendlyMessage = if (isDisabled) {
-                    "Verificação por SMS (Phone Auth) não está ativada no projeto Firebase. " +
-                        "Ative em Console do Firebase > Authentication > Sign-in method > Telefone, " +
-                        "ou toque em 'Salvar Perfil' para registrar seu número na busca de contatos."
+                val errorCode = (e as? FirebaseAuthException)?.errorCode
+                Log.w(TAG, "Phone verification failed [$errorCode]: ${e.message}", e)
+                val rawMessage = e.localizedMessage ?: e.message.orEmpty()
+                val isOperationNotAllowed = errorCode == "ERROR_OPERATION_NOT_ALLOWED" ||
+                    rawMessage.contains("not allowed", ignoreCase = true) ||
+                    rawMessage.contains("não é permitida", ignoreCase = true)
+                val friendlyMessage = if (isOperationNotAllowed) {
+                    "Falha no SMS ($errorCode: ${rawMessage.ifBlank { "operação não permitida" }}). " +
+                        "Verifique no Console do Firebase: 1) Telefone ativado em Sign-in method (ou cadastre um número de teste), " +
+                        "2) Política de região SMS (+55) / plano Blaze, 3) SHA-1 e SHA-256 no app Android. " +
+                        "Ou toque em 'Salvar Perfil' para registrar o número sem SMS."
                 } else {
-                    e.localizedMessage
-                        ?: "Falha ao enviar SMS. Verifique se Phone Auth está ativado no Console do Firebase."
+                    if (errorCode != null) "[$errorCode] $rawMessage" else rawMessage.ifBlank {
+                        "Falha ao enviar SMS. Verifique a configuração no Console do Firebase."
+                    }
                 }
                 onEvent(PhoneVerificationEvent.Failed(friendlyMessage))
             }
