@@ -8,6 +8,8 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
+import com.example.BuildConfig
+import com.example.data.local.UserSettings
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -23,13 +25,50 @@ import java.util.Locale
 
 data class AppUpdateReleaseInfo(
     val apkUrl: String,
+    val releaseId: Long? = null,
+    val tagName: String? = null,
+    val runNumber: Int? = null,
+    val commitSha: String? = null,
+    val publishedAt: String? = null,
+    val assetUpdatedAt: String? = null,
     val versionCode: Long? = null,
     val versionName: String? = null,
     val releaseNotes: String? = null,
     val expectedSha256: String? = null,
     val fileName: String = "WhatwillIdo-update.apk",
     val authTokenForApiRedirect: String? = null
+) {
+    fun uniqueKey(): String = when {
+        runNumber != null && runNumber > 0 -> "build_$runNumber"
+        releaseId != null && releaseId > 0L -> "rel_$releaseId"
+        !commitSha.isNullOrBlank() -> "sha_${commitSha.take(10)}"
+        else -> "direct_${apkUrl.hashCode().toUInt()}"
+    }
+}
+
+data class GitCommitHeadInfo(
+    val sha: String,
+    val message: String? = null,
+    val dateIso: String? = null
 )
+
+sealed interface UpdateCheckResult {
+    data class UpdateAvailable(
+        val release: AppUpdateReleaseInfo,
+        val latestBranchCommit: GitCommitHeadInfo? = null,
+        val reason: String
+    ) : UpdateCheckResult
+
+    data class WaitingForCiBuild(
+        val latestCommit: GitCommitHeadInfo,
+        val currentRelease: AppUpdateReleaseInfo?
+    ) : UpdateCheckResult
+
+    data class UpToDate(
+        val latestCommit: GitCommitHeadInfo?,
+        val latestRelease: AppUpdateReleaseInfo?
+    ) : UpdateCheckResult
+}
 
 data class ApkDownloadProgress(
     val downloadedBytes: Long,
@@ -43,7 +82,8 @@ data class VerifiedApkInfo(
     val sha256: String,
     val packageName: String?,
     val versionName: String?,
-    val versionCode: Long?
+    val versionCode: Long?,
+    val release: AppUpdateReleaseInfo? = null
 )
 
 sealed interface ApkInstallLaunchResult {
@@ -56,13 +96,27 @@ class AppUpdateManager(private val context: Context) {
 
     fun updatesDir(): File = File(context.cacheDir, "updates").apply { mkdirs() }
 
-    fun getCachedUpdateApk(): File? {
-        val candidate = File(updatesDir(), DEFAULT_APK_FILE_NAME)
-        return if (candidate.exists() && candidate.isFile && candidate.length() > MIN_VALID_APK_BYTES) {
-            candidate
-        } else {
-            null
+    fun clearStaleCachedApks(keepFileName: String? = null) {
+        updatesDir().listFiles()?.forEach { file ->
+            if (file.isFile && file.name != keepFileName) {
+                runCatching { file.delete() }
+            }
         }
+    }
+
+    fun getCurrentAppLastUpdateTimeMs(): Long {
+        return runCatching {
+            val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.packageManager.getPackageInfo(
+                    context.packageName,
+                    PackageManager.PackageInfoFlags.of(0L)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.getPackageInfo(context.packageName, 0)
+            }
+            info.lastUpdateTime
+        }.getOrDefault(0L)
     }
 
     fun canRequestPackageInstalls(): Boolean {
@@ -83,7 +137,8 @@ class AppUpdateManager(private val context: Context) {
 
     fun validateApkFile(
         apkFile: File,
-        expectedSha256: String? = null
+        expectedSha256: String? = null,
+        release: AppUpdateReleaseInfo? = null
     ): Result<VerifiedApkInfo> {
         if (!apkFile.exists() || !apkFile.isFile) {
             return Result.failure(IllegalStateException("Arquivo APK não encontrado."))
@@ -143,7 +198,8 @@ class AppUpdateManager(private val context: Context) {
                 sha256 = actualSha256,
                 packageName = pkgInfo.packageName,
                 versionName = pkgInfo.versionName,
-                versionCode = archiveVersionCode
+                versionCode = archiveVersionCode,
+                release = release
             )
         )
     }
@@ -178,6 +234,165 @@ class AppUpdateManager(private val context: Context) {
         }
     }
 
+    suspend fun checkForCommitOrReleaseUpdate(
+        settings: UserSettings,
+        overrideSourceInput: String? = null,
+        overrideToken: String? = null
+    ): Result<UpdateCheckResult> = withContext(Dispatchers.IO) {
+        val token = (overrideToken ?: settings.githubToken).trim()
+        val effectiveInput = (overrideSourceInput?.trim()?.takeIf { it.isNotBlank() }
+            ?: settings.appUpdateUrl.trim().takeIf { it.isNotBlank() }
+            ?: settings.githubRepo.trim().takeIf { it.isNotBlank() }
+            ?: BuildConfig.CI_GITHUB_REPO.trim().takeIf { it.isNotBlank() })
+            ?: return@withContext Result.failure(
+                IllegalArgumentException("Configure um repositório GitHub (usuario/repo) ou URL de atualização.")
+            )
+
+        val effectiveBranch = settings.githubBranch.trim()
+            .ifBlank { BuildConfig.CI_GITHUB_BRANCH.trim() }
+            .ifBlank { "main" }
+
+        try {
+            val ownerRepo = extractGitHubOwnerRepo(effectiveInput)
+            if (ownerRepo != null) {
+                val latestCommit = runCatching {
+                    fetchLatestBranchCommit(ownerRepo, effectiveBranch, token)
+                }.getOrNull()
+                val latestRelease = resolveLatestGitHubApkRelease(ownerRepo, token).getOrNull()
+
+                if (latestRelease != null && isReleaseNewerThanInstalled(latestRelease, settings)) {
+                    val shortSha = latestRelease.commitSha?.take(7)
+                    val label = latestRelease.tagName ?: latestRelease.versionName ?: "nova build"
+                    val reason = if (shortSha != null) {
+                        "Nova versão $label (commit $shortSha) disponível!"
+                    } else {
+                        "Nova release $label disponível!"
+                    }
+                    return@withContext Result.success(
+                        UpdateCheckResult.UpdateAvailable(
+                            release = latestRelease,
+                            latestBranchCommit = latestCommit,
+                            reason = reason
+                        )
+                    )
+                }
+
+                if (latestCommit != null && isCommitWaitingForRelease(latestCommit, latestRelease, settings)) {
+                    return@withContext Result.success(
+                        UpdateCheckResult.WaitingForCiBuild(
+                            latestCommit = latestCommit,
+                            currentRelease = latestRelease
+                        )
+                    )
+                }
+
+                if (latestRelease == null) {
+                    return@withContext Result.failure(
+                        IllegalStateException("Nenhuma Release com arquivo .apk encontrada em $ownerRepo.")
+                    )
+                }
+
+                return@withContext Result.success(
+                    UpdateCheckResult.UpToDate(
+                        latestCommit = latestCommit,
+                        latestRelease = latestRelease
+                    )
+                )
+            }
+
+            // Non-GitHub-repo source: JSON manifest or direct .apk URL
+            val resolved = resolveUpdateSource(effectiveInput, token).getOrThrow()
+            if (isReleaseNewerThanInstalled(resolved, settings) || overrideSourceInput != null) {
+                Result.success(
+                    UpdateCheckResult.UpdateAvailable(
+                        release = resolved,
+                        latestBranchCommit = null,
+                        reason = "Atualização encontrada (${resolved.versionName ?: resolved.fileName})."
+                    )
+                )
+            } else {
+                Result.success(
+                    UpdateCheckResult.UpToDate(
+                        latestCommit = null,
+                        latestRelease = resolved
+                    )
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun isReleaseNewerThanInstalled(
+        release: AppUpdateReleaseInfo,
+        settings: UserSettings
+    ): Boolean {
+        val installedRun = maxOf(BuildConfig.CI_RUN_NUMBER, settings.lastInstalledRunNumber)
+        val installedSha = BuildConfig.GIT_COMMIT_SHA.trim().ifBlank { settings.lastInstalledCommitSha.trim() }
+        val installedReleaseId = settings.lastInstalledReleaseId
+
+        // 1. Exact release ID match already installed
+        if (release.releaseId != null && installedReleaseId > 0L && release.releaseId == installedReleaseId) {
+            return false
+        }
+
+        // 2. Compare GitHub Actions build run numbers when available
+        val relRun = release.runNumber
+        if (relRun != null && relRun > 0) {
+            if (installedRun > 0) {
+                if (relRun > installedRun) return true
+                if (relRun < installedRun) return false
+            } else if (installedReleaseId == 0L && installedSha.isBlank()) {
+                // Legacy/local APK without CI metadata -> upgrade to latest GitHub release
+                return true
+            }
+        }
+
+        // 3. Compare versionCode from JSON manifest if available
+        val relVersionCode = release.versionCode
+        val installedVersionCode = maxOf(BuildConfig.VERSION_CODE.toLong(), installedRun.toLong())
+        if (relVersionCode != null && relVersionCode > installedVersionCode) {
+            return true
+        }
+
+        // 4. Compare commit SHA
+        val relSha = release.commitSha?.trim().orEmpty()
+        if (relSha.isNotBlank() && installedSha.isNotBlank()) {
+            val sameCommit = relSha.equals(installedSha, ignoreCase = true) ||
+                relSha.startsWith(installedSha, ignoreCase = true) ||
+                installedSha.startsWith(relSha, ignoreCase = true)
+            if (!sameCommit && (relRun == null || installedRun == 0 || relRun >= installedRun)) {
+                return true
+            }
+        }
+
+        // 5. Fallback releaseId monotonic comparison
+        if (release.releaseId != null && installedReleaseId > 0L && release.releaseId > installedReleaseId) {
+            return true
+        }
+
+        return false
+    }
+
+    private fun isCommitWaitingForRelease(
+        latestCommit: GitCommitHeadInfo,
+        latestRelease: AppUpdateReleaseInfo?,
+        settings: UserSettings
+    ): Boolean {
+        val installedSha = BuildConfig.GIT_COMMIT_SHA.trim().ifBlank { settings.lastInstalledCommitSha.trim() }
+        if (installedSha.isNotBlank() && latestCommit.sha.equals(installedSha, ignoreCase = true)) {
+            return false
+        }
+        val relSha = latestRelease?.commitSha?.trim().orEmpty()
+        if (relSha.isNotBlank() && latestCommit.sha.equals(relSha, ignoreCase = true)) {
+            return false
+        }
+        // Only treat as waiting when we either have a known installed SHA or an existing release to compare against
+        return installedSha.isNotBlank() || relSha.isNotBlank()
+    }
+
     suspend fun resolveUpdateSource(
         rawInput: String,
         githubToken: String = ""
@@ -190,7 +405,6 @@ class AppUpdateManager(private val context: Context) {
         }
 
         try {
-            // 1. Check if input is a GitHub repository slug (owner/repo) or repo URL
             extractGitHubOwnerRepo(trimmed)?.let { ownerRepo ->
                 return@withContext resolveLatestGitHubApkRelease(ownerRepo, githubToken)
             }
@@ -208,8 +422,7 @@ class AppUpdateManager(private val context: Context) {
                 return@withContext fetchAndParseUpdateJson(trimmed, githubToken)
             }
 
-            // Probe direct URL (HEAD or JSON auto-detect if user passed an API/manifest URL without .json)
-            if (!lowerPath.endsWith(".apk") && trimmed.contains("api.github.com/repos/", ignoreCase = true)) {
+            if (trimmed.contains("api.github.com/repos/", ignoreCase = true) && !lowerPath.endsWith(".apk")) {
                 return@withContext parseGitHubReleasesPayload(
                     jsonBody = httpGetText(trimmed, githubToken),
                     authToken = githubToken.takeIf { it.isNotBlank() }
@@ -218,7 +431,7 @@ class AppUpdateManager(private val context: Context) {
 
             val fileName = parsed.lastPathSegment
                 ?.takeIf { it.lowercase(Locale.ROOT).endsWith(".apk") }
-                ?: DEFAULT_APK_FILE_NAME
+                ?: "WhatwillIdo-update.apk"
             Result.success(
                 AppUpdateReleaseInfo(
                     apkUrl = trimmed,
@@ -239,23 +452,35 @@ class AppUpdateManager(private val context: Context) {
         ownerRepo: String,
         githubToken: String = ""
     ): Result<AppUpdateReleaseInfo> = withContext(Dispatchers.IO) {
-        val cleanRepo = ownerRepo.trim()
-            .removePrefix("https://github.com/")
-            .removePrefix("http://github.com/")
-            .removeSuffix(".git")
-            .trim('/')
-        if (!cleanRepo.contains('/') || cleanRepo.count { it == '/' } != 1) {
-            return@withContext Result.failure(
+        val cleanRepo = normalizeOwnerRepo(ownerRepo)
+            ?: return@withContext Result.failure(
                 IllegalArgumentException("Repositório GitHub inválido. Use o formato usuario/repositorio.")
             )
-        }
         return@withContext try {
-            val apiUrl = "https://api.github.com/repos/$cleanRepo/releases?per_page=15"
-            val body = httpGetText(apiUrl, githubToken)
-            parseGitHubReleasesPayload(
-                jsonBody = body,
-                authToken = githubToken.trim().takeIf { it.isNotBlank() }
-            )
+            val tokenOrNull = githubToken.trim().takeIf { it.isNotBlank() }
+            val candidates = mutableListOf<AppUpdateReleaseInfo>()
+
+            runCatching {
+                val listJson = httpGetText(
+                    "https://api.github.com/repos/$cleanRepo/releases?per_page=30",
+                    githubToken
+                )
+                collectReleasesFromJson(JSONArray(listJson), tokenOrNull, candidates)
+            }
+
+            runCatching {
+                val latestJson = httpGetText(
+                    "https://api.github.com/repos/$cleanRepo/releases/latest",
+                    githubToken
+                )
+                collectReleasesFromJson(JSONArray().apply { put(JSONObject(latestJson)) }, tokenOrNull, candidates)
+            }
+
+            val newest = selectNewestRelease(candidates)
+                ?: return@withContext Result.failure(
+                    IllegalStateException("Nenhuma Release com arquivo .apk encontrada em $cleanRepo.")
+                )
+            Result.success(newest)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -269,9 +494,13 @@ class AppUpdateManager(private val context: Context) {
     ): Result<VerifiedApkInfo> = withContext(Dispatchers.IO) {
         val dir = updatesDir()
         val tempFile = File(dir, "download_${System.currentTimeMillis()}.apk.part")
-        val targetFile = File(dir, DEFAULT_APK_FILE_NAME)
+        val targetFileName = "whatwillido_${release.uniqueKey()}.apk"
+        val targetFile = File(dir, targetFileName)
 
         try {
+            // Remove older cached APKs so an old app-debug.apk can never be picked up
+            clearStaleCachedApks(keepFileName = null)
+
             val connection = openConnectionWithRedirects(
                 initialUrl = release.apkUrl,
                 authToken = release.authTokenForApiRedirect,
@@ -298,7 +527,6 @@ class AppUpdateManager(private val context: Context) {
 
                 val totalBytes = connection.contentLengthLong.takeIf { it > 0L } ?: -1L
                 var downloadedBytes = 0L
-                val digest = MessageDigest.getInstance("SHA-256")
                 val buffer = ByteArray(16 * 1024)
 
                 connection.inputStream.use { input ->
@@ -308,7 +536,6 @@ class AppUpdateManager(private val context: Context) {
                             if (read < 0) break
                             if (read > 0) {
                                 output.write(buffer, 0, read)
-                                digest.update(buffer, 0, read)
                                 downloadedBytes += read
                                 val fraction = if (totalBytes > 0L) {
                                     (downloadedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
@@ -335,7 +562,11 @@ class AppUpdateManager(private val context: Context) {
                 tempFile.delete()
             }
 
-            validateApkFile(targetFile, release.expectedSha256).onFailure {
+            validateApkFile(
+                apkFile = targetFile,
+                expectedSha256 = release.expectedSha256,
+                release = release
+            ).onFailure {
                 targetFile.delete()
             }
         } catch (e: CancellationException) {
@@ -345,6 +576,26 @@ class AppUpdateManager(private val context: Context) {
             tempFile.delete()
             Result.failure(e)
         }
+    }
+
+    private fun fetchLatestBranchCommit(
+        ownerRepo: String,
+        branch: String,
+        githubToken: String
+    ): GitCommitHeadInfo? {
+        val cleanBranch = Uri.encode(branch.ifBlank { "main" })
+        val body = httpGetText(
+            "https://api.github.com/repos/$ownerRepo/commits/$cleanBranch",
+            githubToken
+        )
+        val obj = JSONObject(body)
+        val sha = obj.optString("sha").trim()
+        if (sha.isBlank()) return null
+        val commitObj = obj.optJSONObject("commit")
+        val msg = commitObj?.optString("message")?.lineSequence()?.firstOrNull()?.take(100)
+        val dateIso = commitObj?.optJSONObject("committer")?.optString("date")
+            ?.ifBlank { commitObj.optJSONObject("author")?.optString("date").orEmpty() }
+        return GitCommitHeadInfo(sha = sha, message = msg, dateIso = dateIso)
     }
 
     private fun fetchAndParseUpdateJson(
@@ -366,7 +617,12 @@ class AppUpdateManager(private val context: Context) {
         val versionCode = if (obj.has("versionCode") && !obj.isNull("versionCode")) {
             obj.optLong("versionCode").takeIf { it > 0L }
         } else null
+        val runNumber = if (obj.has("runNumber") && !obj.isNull("runNumber")) {
+            obj.optInt("runNumber").takeIf { it > 0 }
+        } else versionCode?.toInt()
         val versionName = obj.optString("versionName").ifBlank { obj.optString("version") }
+            .takeIf { it.isNotBlank() }
+        val commitSha = obj.optString("commitSha").ifBlank { obj.optString("sha") }
             .takeIf { it.isNotBlank() }
         val notes = obj.optString("releaseNotes").ifBlank { obj.optString("notes") }
             .takeIf { it.isNotBlank() }
@@ -374,6 +630,8 @@ class AppUpdateManager(private val context: Context) {
         return Result.success(
             AppUpdateReleaseInfo(
                 apkUrl = apkUrl,
+                runNumber = runNumber,
+                commitSha = commitSha,
                 versionCode = versionCode,
                 versionName = versionName,
                 releaseNotes = notes,
@@ -392,7 +650,20 @@ class AppUpdateManager(private val context: Context) {
         } else {
             JSONArray().apply { put(JSONObject(trimmed)) }
         }
+        val candidates = mutableListOf<AppUpdateReleaseInfo>()
+        collectReleasesFromJson(releases, authToken, candidates)
+        val newest = selectNewestRelease(candidates)
+            ?: return Result.failure(
+                IllegalStateException("Nenhuma Release com arquivo .apk encontrada neste repositório GitHub.")
+            )
+        return Result.success(newest)
+    }
 
+    private fun collectReleasesFromJson(
+        releases: JSONArray,
+        authToken: String?,
+        out: MutableList<AppUpdateReleaseInfo>
+    ) {
         for (i in 0 until releases.length()) {
             val rel = releases.optJSONObject(i) ?: continue
             if (rel.optBoolean("draft", false)) continue
@@ -400,49 +671,136 @@ class AppUpdateManager(private val context: Context) {
             if (tagName.equals("zap2-uploads", ignoreCase = true)) continue
 
             val assets = rel.optJSONArray("assets") ?: continue
+            val apkAssets = mutableListOf<JSONObject>()
             for (a in 0 until assets.length()) {
                 val asset = assets.optJSONObject(a) ?: continue
                 val assetName = asset.optString("name")
-                if (!assetName.lowercase(Locale.ROOT).endsWith(".apk")) continue
-
-                val browserUrl = asset.optString("browser_download_url").trim()
-                val apiAssetUrl = asset.optString("url").trim()
-                val downloadUrl = if (!authToken.isNullOrBlank() && apiAssetUrl.isNotBlank()) {
-                    apiAssetUrl
-                } else {
-                    browserUrl.ifBlank { apiAssetUrl }
+                val size = asset.optLong("size", 0L)
+                if (assetName.lowercase(Locale.ROOT).endsWith(".apk") && size > MIN_VALID_APK_BYTES) {
+                    apkAssets += asset
                 }
-                if (downloadUrl.isBlank()) continue
-
-                val title = rel.optString("name").ifBlank { tagName }.takeIf { it.isNotBlank() }
-                val notes = rel.optString("body").takeIf { it.isNotBlank() }
-                return Result.success(
-                    AppUpdateReleaseInfo(
-                        apkUrl = downloadUrl,
-                        versionName = title,
-                        releaseNotes = notes,
-                        fileName = assetName.ifBlank { DEFAULT_APK_FILE_NAME },
-                        authTokenForApiRedirect = authToken
-                    )
-                )
             }
+            if (apkAssets.isEmpty()) continue
+
+            // Prefer WhatwillIdo*.apk over Zap2*.apk over app-debug.apk, then newest updated_at
+            val bestAsset = apkAssets.maxWithOrNull(
+                compareBy<JSONObject>(
+                    { assetPriorityScore(it.optString("name")) },
+                    { it.optString("updated_at") }
+                )
+            ) ?: continue
+
+            val assetName = bestAsset.optString("name")
+            val browserUrl = bestAsset.optString("browser_download_url").trim()
+            val apiAssetUrl = bestAsset.optString("url").trim()
+            val downloadUrl = if (!authToken.isNullOrBlank() && apiAssetUrl.isNotBlank()) {
+                apiAssetUrl
+            } else {
+                browserUrl.ifBlank { apiAssetUrl }
+            }
+            if (downloadUrl.isBlank()) continue
+
+            val releaseId = rel.optLong("id", 0L).takeIf { it > 0L }
+            val body = rel.optString("body")
+            val title = rel.optString("name").ifBlank { tagName }.takeIf { it.isNotBlank() }
+            val runNumber = parseRunNumber(tagName, title)
+            val commitSha = extractCommitSha(
+                targetCommitish = rel.optString("target_commitish"),
+                releaseBody = body
+            )
+            val publishedAt = rel.optString("published_at").ifBlank { rel.optString("created_at") }
+
+            out += AppUpdateReleaseInfo(
+                apkUrl = downloadUrl,
+                releaseId = releaseId,
+                tagName = tagName.takeIf { it.isNotBlank() },
+                runNumber = runNumber,
+                commitSha = commitSha,
+                publishedAt = publishedAt.takeIf { it.isNotBlank() },
+                assetUpdatedAt = bestAsset.optString("updated_at").takeIf { it.isNotBlank() },
+                versionCode = runNumber?.toLong(),
+                versionName = title,
+                releaseNotes = body.takeIf { it.isNotBlank() },
+                fileName = assetName.ifBlank { "WhatwillIdo-update.apk" },
+                authTokenForApiRedirect = authToken
+            )
         }
-        return Result.failure(
-            IllegalStateException("Nenhuma Release com arquivo .apk encontrada neste repositório GitHub.")
-        )
+    }
+
+    private fun selectNewestRelease(candidates: List<AppUpdateReleaseInfo>): AppUpdateReleaseInfo? {
+        if (candidates.isEmpty()) return null
+        return candidates.distinctBy { it.releaseId ?: it.apkUrl.hashCode().toLong() }
+            .maxWithOrNull(
+                compareBy<AppUpdateReleaseInfo>(
+                    { it.runNumber ?: -1 },
+                    { it.publishedAt.orEmpty() },
+                    { it.assetUpdatedAt.orEmpty() },
+                    { it.releaseId ?: 0L }
+                )
+            )
+    }
+
+    private fun assetPriorityScore(assetName: String): Int {
+        val lower = assetName.lowercase(Locale.ROOT)
+        return when {
+            lower.contains("whatwillido") -> 3
+            lower.contains("zap2") -> 2
+            else -> 1
+        }
+    }
+
+    private fun parseRunNumber(tagName: String?, title: String?): Int? {
+        val regex = Regex("(?:build[-_# ]*|#)(\\d+)", RegexOption.IGNORE_CASE)
+        tagName?.let { tag ->
+            regex.find(tag)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { return it }
+        }
+        title?.let { t ->
+            regex.find(t)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { return it }
+        }
+        return null
+    }
+
+    private fun extractCommitSha(targetCommitish: String?, releaseBody: String?): String? {
+        val hex40 = Regex("^[0-9a-fA-F]{40}$")
+        val target = targetCommitish?.trim().orEmpty()
+        if (hex40.matches(target)) return target.lowercase(Locale.ROOT)
+        if (!releaseBody.isNullOrBlank()) {
+            val bodyMatch = Regex("commit\\s+([0-9a-fA-F]{7,40})", RegexOption.IGNORE_CASE)
+                .find(releaseBody)
+                ?.groupValues
+                ?.getOrNull(1)
+            if (!bodyMatch.isNullOrBlank()) return bodyMatch.lowercase(Locale.ROOT)
+        }
+        return null
+    }
+
+    private fun normalizeOwnerRepo(ownerRepo: String): String? {
+        val clean = ownerRepo.trim()
+            .removePrefix("https://github.com/")
+            .removePrefix("http://github.com/")
+            .removeSuffix(".git")
+            .trim('/')
+        return if (clean.matches(Regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"))) clean else null
     }
 
     private fun extractGitHubOwnerRepo(input: String): String? {
         val clean = input.trim().removeSuffix("/")
-        if (clean.matches(Regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"))) {
-            return clean
-        }
+        normalizeOwnerRepo(clean)?.let { return it }
+
         if (clean.startsWith("https://github.com/", ignoreCase = true) ||
             clean.startsWith("http://github.com/", ignoreCase = true)
         ) {
             val path = Uri.parse(clean).path?.trim('/') ?: return null
             val parts = path.split('/').filter { it.isNotBlank() }
-            if (parts.size == 2 || (parts.size >= 3 && parts[2].equals("releases", ignoreCase = true))) {
+            if (parts.size == 2) {
+                return "${parts[0]}/${parts[1]}"
+            }
+            // Match repo releases page (/releases, /releases/latest) but NOT a direct asset .apk download URL
+            if (parts.size >= 3 &&
+                parts[2].equals("releases", ignoreCase = true) &&
+                !clean.lowercase(Locale.ROOT).endsWith(".apk") &&
+                (parts.size == 3 || parts[3].equals("latest", ignoreCase = true))
+            ) {
                 return "${parts[0]}/${parts[1]}"
             }
         }
@@ -482,10 +840,14 @@ class AppUpdateManager(private val context: Context) {
             val conn = (urlObj.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 instanceFollowRedirects = false
+                useCaches = false
+                defaultUseCaches = false
                 connectTimeout = 20_000
                 readTimeout = 60_000
                 setRequestProperty("User-Agent", "WhatwillIdo-Android")
                 setRequestProperty("Accept", acceptHeader)
+                setRequestProperty("Cache-Control", "no-cache, no-store, must-revalidate")
+                setRequestProperty("Pragma", "no-cache")
                 if (!authToken.isNullOrBlank() && urlObj.host.equals(initialHost, ignoreCase = true)) {
                     setRequestProperty("Authorization", "Bearer $authToken")
                 }
@@ -541,7 +903,6 @@ class AppUpdateManager(private val context: Context) {
 
     companion object {
         const val APK_MIME_TYPE = "application/vnd.android.package-archive"
-        private const val DEFAULT_APK_FILE_NAME = "whatwillido-update.apk"
         private const val MIN_VALID_APK_BYTES = 1024L
         private const val MAX_REDIRECTS = 6
     }

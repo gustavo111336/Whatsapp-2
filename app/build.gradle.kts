@@ -14,11 +14,21 @@ android {
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
+    val ciRunNumber = System.getenv("GITHUB_RUN_NUMBER")?.trim()?.toIntOrNull() ?: 0
+    val ciCommitSha = System.getenv("GITHUB_SHA")?.trim()?.replace("\"", "").orEmpty()
+    val ciRepo = System.getenv("GITHUB_REPOSITORY")?.trim()?.replace("\"", "").orEmpty()
+    val ciBranch = System.getenv("GITHUB_REF_NAME")?.trim()?.replace("\"", "").orEmpty()
+
     applicationId = "com.aistudio.applet.ijtpfk"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = maxOf(1, ciRunNumber)
+    versionName = if (ciRunNumber > 0) "1.0.$ciRunNumber" else "1.0"
+
+    buildConfigField("int", "CI_RUN_NUMBER", ciRunNumber.toString())
+    buildConfigField("String", "GIT_COMMIT_SHA", "\"$ciCommitSha\"")
+    buildConfigField("String", "CI_GITHUB_REPO", "\"$ciRepo\"")
+    buildConfigField("String", "CI_GITHUB_BRANCH", "\"$ciBranch\"")
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

@@ -67,7 +67,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -82,9 +81,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.BuildConfig
 import com.example.data.local.STORAGE_MODE_AUTO
@@ -95,7 +91,6 @@ import com.example.data.model.ThemeMode
 import com.example.data.remote.FreeMediaStorageManager
 import com.example.service.Zap2NotificationHelper
 import com.example.service.ZipArchiveHelper
-import com.example.ui.chatdetail.ApkInstallPermissionDialog
 import com.example.ui.components.Zap2Avatar
 import com.example.ui.components.Zap2ProfileBanner
 import com.example.ui.components.formatRelativeDateTime
@@ -118,17 +113,6 @@ fun BackupAndSettingsScreen(
     val mediaUploadProgress by viewModel.mediaUploadProgress.collectAsStateWithLifecycle()
     val usernameAvailability by viewModel.usernameAvailability.collectAsStateWithLifecycle()
     val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
-    val lifecycleOwner = LocalLifecycleOwner.current
-
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                viewModel.onResumeAfterInstallSettings()
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
 
     val effectiveBannerUrl = myProfile?.bannerUrl?.takeIf { it.isNotBlank() }
         ?: settings.cachedBannerUrl.takeIf { it.isNotBlank() }
@@ -1145,22 +1129,46 @@ fun BackupAndSettingsScreen(
                                 fontWeight = FontWeight.Bold
                             )
                         }
+                        val commitInfo = BuildConfig.GIT_COMMIT_SHA.take(7).ifBlank { settings.lastInstalledCommitSha.take(7) }
+                        val buildLabel = if (commitInfo.isNotBlank()) " • commit $commitInfo" else ""
                         Text(
-                            text = "Versão instalada: v${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE}) • ${BuildConfig.APPLICATION_ID}",
+                            text = "Versão instalada: v${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})$buildLabel",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.primary
                         )
                         Text(
-                            text = "Baixe uma atualização direto de uma URL (.apk, .json ou usuário/repositório GitHub) com verificação de integridade e instalação pelo instalador nativo do Android.",
+                            text = "Sempre que houver um commit ou release mais recente, o app baixa o APK mais novo em segundo plano e abre o instalador do Android automaticamente.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Atualizar automaticamente em novos commits/releases",
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Switch(
+                                checked = settings.autoCheckUpdates,
+                                onCheckedChange = viewModel::setAutoCheckUpdates
+                            )
+                        }
 
                         OutlinedTextField(
                             value = appUpdateUrlInput,
                             onValueChange = { appUpdateUrlInput = it },
                             label = { Text("URL do APK, JSON ou usuario/repo GitHub") },
-                            placeholder = { Text("https://.../WhatwillIdo-debug.apk ou usuario/repo") },
+                            placeholder = {
+                                Text(
+                                    BuildConfig.CI_GITHUB_REPO.ifBlank {
+                                        "https://.../WhatwillIdo-debug.apk ou usuario/repo"
+                                    }
+                                )
+                            },
                             singleLine = true,
                             shape = RoundedCornerShape(16.dp),
                             modifier = Modifier
@@ -1185,7 +1193,7 @@ fun BackupAndSettingsScreen(
                                     appUpdateState.downloadedBytes / (1024f * 1024f)
                                 )
                                 val progressLabel = if (appUpdateState.isResolving) {
-                                    "Consultando versão..."
+                                    "Consultando último commit e release..."
                                 } else if (fraction != null) {
                                     "Baixando APK: ${(fraction * 100).toInt()}% ($mbDone)"
                                 } else {
@@ -1229,14 +1237,27 @@ fun BackupAndSettingsScreen(
                             }
                         }
 
+                        val hasAutoSource = appUpdateUrlInput.isNotBlank() ||
+                            githubRepoInput.isNotBlank() ||
+                            BuildConfig.CI_GITHUB_REPO.isNotBlank()
+
                         Button(
                             onClick = {
-                                viewModel.downloadUpdateFromUrl(
-                                    rawUrl = appUpdateUrlInput,
-                                    githubToken = githubTokenInput
-                                )
+                                if (appUpdateUrlInput.isNotBlank()) {
+                                    viewModel.downloadUpdateFromUrl(
+                                        rawUrl = appUpdateUrlInput,
+                                        githubToken = githubTokenInput
+                                    )
+                                } else if (githubRepoInput.isNotBlank()) {
+                                    viewModel.downloadLatestGitHubReleaseUpdate(
+                                        repo = githubRepoInput,
+                                        githubToken = githubTokenInput
+                                    )
+                                } else {
+                                    viewModel.checkForUpdatesNow()
+                                }
                             },
-                            enabled = !appUpdateState.isResolving && !appUpdateState.isDownloading && appUpdateUrlInput.isNotBlank(),
+                            enabled = !appUpdateState.isResolving && !appUpdateState.isDownloading && hasAutoSource,
                             shape = RoundedCornerShape(16.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1244,10 +1265,10 @@ fun BackupAndSettingsScreen(
                                 .testTag("app_update_download_button")
                         ) {
                             Icon(Icons.Rounded.CloudDownload, contentDescription = null)
-                            Text(" Baixar e Instalar APK", modifier = Modifier.padding(start = 6.dp))
+                            Text(" Checar Commit/Release e Instalar", modifier = Modifier.padding(start = 6.dp))
                         }
 
-                        if (githubRepoInput.isNotBlank()) {
+                        if (githubRepoInput.isNotBlank() && appUpdateUrlInput.isNotBlank()) {
                             OutlinedButton(
                                 onClick = {
                                     viewModel.downloadLatestGitHubReleaseUpdate(
@@ -1559,19 +1580,6 @@ fun BackupAndSettingsScreen(
                     Text("Fechar")
                 }
             }
-        )
-    }
-
-    if (appUpdateState.needsInstallPermissionDialog) {
-        ApkInstallPermissionDialog(
-            description = "Para concluir a atualização do WhatwillIdo, autorize \"Instalar apps desconhecidos\" nas configurações do Android.",
-            onOpenSettings = {
-                viewModel.dismissUpdateInstallPermissionDialog()
-                runCatching {
-                    context.startActivity(viewModel.buildManageUnknownAppSourcesIntent())
-                }
-            },
-            onDismiss = viewModel::dismissUpdateInstallPermissionDialog
         )
     }
 }

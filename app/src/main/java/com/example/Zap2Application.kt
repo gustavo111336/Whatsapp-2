@@ -23,6 +23,7 @@ import com.example.data.remote.ChatRepository
 import com.example.data.remote.FreeMediaStorageManager
 import com.example.data.remote.UserAndContactsRepository
 import com.example.data.remote.WebRtcCallManager
+import com.example.service.AppUpdateCoordinator
 import com.example.service.AppUpdateManager
 import com.example.service.AudioRecorderPlayer
 import com.google.firebase.Firebase
@@ -67,6 +68,9 @@ class AppContainer(context: Context) {
     }
     val appUpdateManager: AppUpdateManager by lazy {
         AppUpdateManager(appContext)
+    }
+    val appUpdateCoordinator: AppUpdateCoordinator by lazy {
+        AppUpdateCoordinator(appUpdateManager, settingsStore)
     }
 }
 
