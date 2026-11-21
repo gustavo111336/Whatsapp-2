@@ -841,6 +841,24 @@ class UserAndContactsRepository(
         }
     }
 
+    suspend fun resetCodeVerificationOnSignOut() {
+        val uid = auth.currentUser?.uid ?: return
+        try {
+            db.collection("users").document(uid).update(
+                mapOf(
+                    "emailCodeVerified" to false,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, "users/$uid")
+        } finally {
+            settingsStore?.saveEmailSecurityState(uid = uid, codeVerified = false)
+        }
+    }
+
     fun observeSavedContacts(uid: String): Flow<List<ContactEntry>> = flow {
         val path = "users/$uid/contacts"
         emitAll(

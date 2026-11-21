@@ -24,6 +24,11 @@ const val AI_PROVIDER_AUTO = "AUTO"
 const val AI_PROVIDER_GEMINI = "GEMINI"
 const val AI_PROVIDER_OPENAI = "OPENAI_COMPATIBLE"
 
+const val EMAIL_DELIVERY_AUTO = "AUTO"
+const val EMAIL_DELIVERY_GMAIL_SMTP = "GMAIL_SMTP"
+const val EMAIL_DELIVERY_APPS_SCRIPT = "APPS_SCRIPT"
+const val EMAIL_DELIVERY_RESEND = "RESEND"
+
 data class UserSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val dynamicColor: Boolean = true,
@@ -58,7 +63,13 @@ data class UserSettings(
     val emailVerificationEnabled: Boolean = true,
     val emailCodeVerified: Boolean = false,
     val recoveryEmail: String = "",
-    val recoveryEmailVerified: Boolean = false
+    val recoveryEmailVerified: Boolean = false,
+    val emailDeliveryMode: String = EMAIL_DELIVERY_AUTO,
+    val emailSenderAddress: String = "",
+    val emailSmtpAppPassword: String = "",
+    val emailWebhookUrl: String = "",
+    val emailResendApiKey: String = "",
+    val emailResendFrom: String = ""
 )
 
 class SettingsDataStore(private val context: Context) {
@@ -97,6 +108,12 @@ class SettingsDataStore(private val context: Context) {
         val EMAIL_CODE_VERIFIED = booleanPreferencesKey("email_code_verified")
         val RECOVERY_EMAIL = stringPreferencesKey("recovery_email")
         val RECOVERY_EMAIL_VERIFIED = booleanPreferencesKey("recovery_email_verified")
+        val EMAIL_DELIVERY_MODE = stringPreferencesKey("email_delivery_mode")
+        val EMAIL_SENDER_ADDRESS = stringPreferencesKey("email_sender_address")
+        val EMAIL_SMTP_APP_PASSWORD = stringPreferencesKey("email_smtp_app_password")
+        val EMAIL_WEBHOOK_URL = stringPreferencesKey("email_webhook_url")
+        val EMAIL_RESEND_API_KEY = stringPreferencesKey("email_resend_api_key")
+        val EMAIL_RESEND_FROM = stringPreferencesKey("email_resend_from")
     }
 
     val settingsFlow: Flow<UserSettings> = context.dataStore.data.map { prefs ->
@@ -136,7 +153,13 @@ class SettingsDataStore(private val context: Context) {
             emailVerificationEnabled = prefs[Keys.EMAIL_VERIFICATION_ENABLED] ?: true,
             emailCodeVerified = prefs[Keys.EMAIL_CODE_VERIFIED] ?: false,
             recoveryEmail = prefs[Keys.RECOVERY_EMAIL] ?: "",
-            recoveryEmailVerified = prefs[Keys.RECOVERY_EMAIL_VERIFIED] ?: false
+            recoveryEmailVerified = prefs[Keys.RECOVERY_EMAIL_VERIFIED] ?: false,
+            emailDeliveryMode = (prefs[Keys.EMAIL_DELIVERY_MODE] ?: EMAIL_DELIVERY_AUTO).ifBlank { EMAIL_DELIVERY_AUTO },
+            emailSenderAddress = prefs[Keys.EMAIL_SENDER_ADDRESS] ?: "",
+            emailSmtpAppPassword = prefs[Keys.EMAIL_SMTP_APP_PASSWORD] ?: "",
+            emailWebhookUrl = prefs[Keys.EMAIL_WEBHOOK_URL] ?: "",
+            emailResendApiKey = prefs[Keys.EMAIL_RESEND_API_KEY] ?: "",
+            emailResendFrom = prefs[Keys.EMAIL_RESEND_FROM] ?: ""
         )
     }
 
@@ -288,6 +311,24 @@ class SettingsDataStore(private val context: Context) {
                 if (recoveryEmail != null) prefs[Keys.RECOVERY_EMAIL] = recoveryEmail.trim()
                 if (recoveryEmailVerified != null) prefs[Keys.RECOVERY_EMAIL_VERIFIED] = recoveryEmailVerified
             }
+        }
+    }
+
+    suspend fun saveEmailDeliveryConfig(
+        mode: String,
+        senderAddress: String,
+        smtpAppPassword: String,
+        webhookUrl: String,
+        resendApiKey: String,
+        resendFrom: String
+    ) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.EMAIL_DELIVERY_MODE] = mode.trim().ifBlank { EMAIL_DELIVERY_AUTO }
+            prefs[Keys.EMAIL_SENDER_ADDRESS] = senderAddress.trim().lowercase()
+            prefs[Keys.EMAIL_SMTP_APP_PASSWORD] = smtpAppPassword.trim()
+            prefs[Keys.EMAIL_WEBHOOK_URL] = webhookUrl.trim()
+            prefs[Keys.EMAIL_RESEND_API_KEY] = resendApiKey.trim()
+            prefs[Keys.EMAIL_RESEND_FROM] = resendFrom.trim()
         }
     }
 }

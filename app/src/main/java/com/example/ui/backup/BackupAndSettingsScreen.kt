@@ -129,6 +129,8 @@ fun BackupAndSettingsScreen(
     val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
     val activeVerificationChallenge by viewModel.activeVerificationChallenge.collectAsStateWithLifecycle()
     val firebaseEmailVerified by viewModel.firebaseEmailVerified.collectAsStateWithLifecycle()
+    val needsMailerSetupHint by viewModel.needsMailerSetupHint.collectAsStateWithLifecycle()
+    val lastSentMaskedEmail by viewModel.lastSentMaskedEmail.collectAsStateWithLifecycle()
 
     val effectiveBannerUrl = myProfile?.bannerUrl?.takeIf { it.isNotBlank() }
         ?: settings.cachedBannerUrl.takeIf { it.isNotBlank() }
@@ -581,7 +583,7 @@ fun BackupAndSettingsScreen(
                 }
             }
 
-            // Email Verification (Toggleable + 6-char Alphanumeric Code) & Recovery Email Card
+            // Email Verification (Toggleable + 6-char Alphanumeric Code sent to Gmail) & Recovery Email Card
             item {
                 EmailSecurityCard(
                     primaryEmail = myProfile?.email,
@@ -591,15 +593,19 @@ fun BackupAndSettingsScreen(
                     recoveryEmail = myProfile?.recoveryEmail ?: settings.recoveryEmail,
                     recoveryEmailVerified = myProfile?.recoveryEmailVerified ?: settings.recoveryEmailVerified,
                     activeChallenge = activeVerificationChallenge,
+                    settings = settings,
+                    needsMailerSetupHint = needsMailerSetupHint,
+                    lastSentMaskedEmail = lastSentMaskedEmail,
                     isBusy = isBusy,
                     onToggleVerification = viewModel::setEmailVerificationEnabled,
-                    onGeneratePrimaryCode = viewModel::generatePrimaryEmailCode,
-                    onGenerateRecoveryCode = viewModel::generateRecoveryEmailCode,
+                    onSendPrimaryCodeToGmail = { viewModel.generatePrimaryEmailCode(sendFirebaseFallback = true) },
+                    onSendRecoveryCodeToGmail = viewModel::generateRecoveryEmailCode,
                     onSubmitCode = viewModel::submitEmailVerificationCode,
                     onSaveRecoveryEmail = viewModel::saveRecoveryEmail,
                     onSendFirebaseVerification = viewModel::sendFirebaseVerificationLink,
-                    onRefreshFirebaseStatus = viewModel::refreshFirebaseVerificationStatus,
-                    onSendRecoveryLink = viewModel::sendAccountRecoveryEmail
+                    onRefreshFirebaseStatus = { viewModel.refreshFirebaseVerificationStatus(markCodeVerifiedIfConfirmed = true) },
+                    onSendRecoveryLink = viewModel::sendAccountRecoveryEmail,
+                    onSaveEmailDeliveryConfig = viewModel::saveEmailDeliveryConfig
                 )
             }
 

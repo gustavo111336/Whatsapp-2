@@ -29,6 +29,10 @@ android {
     buildConfigField("String", "GIT_COMMIT_SHA", "\"$ciCommitSha\"")
     buildConfigField("String", "CI_GITHUB_REPO", "\"$ciRepo\"")
     buildConfigField("String", "CI_GITHUB_BRANCH", "\"$ciBranch\"")
+    buildConfigField("String", "EMAIL_SMTP_USER", "\"${System.getenv("EMAIL_SMTP_USER")?.trim()?.replace("\"", "").orEmpty()}\"")
+    buildConfigField("String", "EMAIL_SMTP_APP_PASSWORD", "\"${System.getenv("EMAIL_SMTP_APP_PASSWORD")?.trim()?.replace("\"", "").orEmpty()}\"")
+    buildConfigField("String", "EMAIL_WEBHOOK_URL", "\"${System.getenv("EMAIL_WEBHOOK_URL")?.trim()?.replace("\"", "").orEmpty()}\"")
+    buildConfigField("String", "EMAIL_RESEND_API_KEY", "\"${System.getenv("EMAIL_RESEND_API_KEY")?.trim()?.replace("\"", "").orEmpty()}\"")
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

@@ -17,10 +17,13 @@ import com.example.data.remote.unwrapFirestoreException
 import com.example.service.AppUpdateCoordinator
 import com.example.service.AppUpdateUiState
 import com.example.service.CodeVerificationOutcome
+import com.example.service.EmailCodeDispatchResult
+import com.example.service.EmailDeliveryService
 import com.example.service.EmailVerificationChallenge
 import com.example.service.EmailVerificationHelper
 import com.example.service.EmailVerificationTarget
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -87,6 +90,12 @@ class BackupViewModel(
 
     private val _firebaseEmailVerified = MutableStateFlow(authRepository.currentUser()?.isEmailVerified == true)
     val firebaseEmailVerified: StateFlow<Boolean> = _firebaseEmailVerified.asStateFlow()
+
+    private val _needsMailerSetupHint = MutableStateFlow(false)
+    val needsMailerSetupHint: StateFlow<Boolean> = _needsMailerSetupHint.asStateFlow()
+
+    private val _lastSentMaskedEmail = MutableStateFlow<String?>(null)
+    val lastSentMaskedEmail: StateFlow<String?> = _lastSentMaskedEmail.asStateFlow()
 
     private var usernameCheckJob: Job? = null
 
@@ -437,6 +446,9 @@ class BackupViewModel(
     fun signOut(context: Context, onComplete: () -> Unit) {
         viewModelScope.launch {
             userRepository.setOnlineStatus(false)
+            userRepository.resetCodeVerificationOnSignOut()
+            _activeVerificationChallenge.value = null
+            _lastSentMaskedEmail.value = null
             authRepository.signOut(context)
             onComplete()
         }
@@ -473,20 +485,24 @@ class BackupViewModel(
             userRepository.setEmailVerificationEnabled(enabled)
                 .onSuccess {
                     if (enabled) {
-                        val targetEmail = myProfile.value?.email
-                            ?: authRepository.currentUser()?.email
-                            ?: "$currentUserId@whatwillido.app"
-                        val challenge = EmailVerificationHelper.createChallenge(
-                            targetEmail = targetEmail,
-                            target = EmailVerificationTarget.PRIMARY
-                        )
-                        _activeVerificationChallenge.value = challenge
-                        _statusMessage.value =
-                            "Verificação de e-mail ativada! Código de 6 dígitos (letras e números): ${challenge.code}"
+                        val targetEmail = (myProfile.value?.email
+                            ?: authRepository.currentUser()?.email).orEmpty()
+                        if (EmailVerificationHelper.isValidEmail(targetEmail)) {
+                            dispatchChallengeToEmail(
+                                targetEmail = targetEmail,
+                                target = EmailVerificationTarget.PRIMARY,
+                                sendFirebaseFallback = true
+                            )
+                        } else {
+                            _statusMessage.value =
+                                "Verificação de e-mail ativada. Faça login com Conta Google para receber o código."
+                        }
                     } else {
                         if (_activeVerificationChallenge.value?.target == EmailVerificationTarget.PRIMARY) {
                             _activeVerificationChallenge.value = null
                         }
+                        _needsMailerSetupHint.value = false
+                        _lastSentMaskedEmail.value = null
                         _statusMessage.value = "Verificação de e-mail desativada."
                     }
                 }
@@ -497,17 +513,21 @@ class BackupViewModel(
         }
     }
 
-    fun generatePrimaryEmailCode() {
-        val targetEmail = myProfile.value?.email
-            ?: authRepository.currentUser()?.email
-            ?: "$currentUserId@whatwillido.app"
-        val challenge = EmailVerificationHelper.createChallenge(
-            targetEmail = targetEmail,
-            target = EmailVerificationTarget.PRIMARY
-        )
-        _activeVerificationChallenge.value = challenge
-        _statusMessage.value =
-            "Novo código de 6 dígitos gerado para $targetEmail: ${challenge.code}"
+    fun generatePrimaryEmailCode(sendFirebaseFallback: Boolean = true) {
+        val targetEmail = (myProfile.value?.email ?: authRepository.currentUser()?.email).orEmpty()
+        if (!EmailVerificationHelper.isValidEmail(targetEmail)) {
+            _statusMessage.value = "Nenhum e-mail válido vinculado à conta atual."
+            return
+        }
+        viewModelScope.launch {
+            _isBusy.value = true
+            dispatchChallengeToEmail(
+                targetEmail = targetEmail,
+                target = EmailVerificationTarget.PRIMARY,
+                sendFirebaseFallback = sendFirebaseFallback
+            )
+            _isBusy.value = false
+        }
     }
 
     fun generateRecoveryEmailCode(emailOverride: String? = null) {
@@ -516,19 +536,107 @@ class BackupViewModel(
             _statusMessage.value = "Salve ou informe um e-mail de recuperação válido primeiro."
             return
         }
+        viewModelScope.launch {
+            _isBusy.value = true
+            dispatchChallengeToEmail(
+                targetEmail = targetEmail,
+                target = EmailVerificationTarget.RECOVERY,
+                sendFirebaseFallback = false
+            )
+            _isBusy.value = false
+        }
+    }
+
+    private suspend fun dispatchChallengeToEmail(
+        targetEmail: String,
+        target: EmailVerificationTarget,
+        sendFirebaseFallback: Boolean
+    ) {
         val challenge = EmailVerificationHelper.createChallenge(
             targetEmail = targetEmail,
-            target = EmailVerificationTarget.RECOVERY
+            target = target
         )
         _activeVerificationChallenge.value = challenge
-        _statusMessage.value =
-            "Código de 6 dígitos para o e-mail de recuperação ($targetEmail): ${challenge.code}"
+        val currentSettings = settingsStore.settingsFlow.first()
+        when (
+            val result = EmailDeliveryService.sendVerificationCodeEmail(
+                recipientEmail = targetEmail,
+                code = challenge.code,
+                isRecovery = target == EmailVerificationTarget.RECOVERY,
+                settings = currentSettings
+            )
+        ) {
+            is EmailCodeDispatchResult.SentViaGmailSmtp -> {
+                _needsMailerSetupHint.value = false
+                _lastSentMaskedEmail.value = result.maskedRecipient
+                _statusMessage.value =
+                    "Código de 6 dígitos (letras e números) enviado para ${result.maskedRecipient} via Gmail! Verifique Caixa de Entrada ou Spam."
+            }
+            is EmailCodeDispatchResult.SentViaWebhook -> {
+                _needsMailerSetupHint.value = false
+                _lastSentMaskedEmail.value = result.maskedRecipient
+                _statusMessage.value =
+                    "Código de 6 dígitos (letras e números) enviado para ${result.maskedRecipient}! Verifique seu Gmail ou Spam."
+            }
+            is EmailCodeDispatchResult.SentViaResend -> {
+                _needsMailerSetupHint.value = false
+                _lastSentMaskedEmail.value = result.maskedRecipient
+                _statusMessage.value =
+                    "Código de 6 dígitos (letras e números) enviado para ${result.maskedRecipient}! Confira seu Gmail."
+            }
+            is EmailCodeDispatchResult.NoCustomMailerConfigured -> {
+                _needsMailerSetupHint.value = true
+                _lastSentMaskedEmail.value = EmailVerificationHelper.maskEmail(targetEmail)
+                if (sendFirebaseFallback && target == EmailVerificationTarget.PRIMARY) {
+                    authRepository.sendFirebaseEmailVerification()
+                        .onSuccess {
+                            _statusMessage.value =
+                                "E-mail oficial enviado para ${EmailVerificationHelper.maskEmail(targetEmail)}. Para enviar o código de 6 dígitos (letras e números) direto ao Gmail, configure o remetente Gmail SMTP/Webhook abaixo."
+                        }
+                        .onFailure {
+                            _statusMessage.value =
+                                "Configure o envio Gmail SMTP ou Apps Script Webhook abaixo para receber o código de 6 dígitos no seu Gmail."
+                        }
+                } else {
+                    _statusMessage.value =
+                        "Configure o envio Gmail SMTP ou Apps Script Webhook abaixo para entregar o código de 6 dígitos diretamente no Gmail."
+                }
+            }
+            is EmailCodeDispatchResult.Failed -> {
+                _needsMailerSetupHint.value = true
+                _statusMessage.value = result.message
+            }
+        }
+    }
+
+    fun saveEmailDeliveryConfig(
+        mode: String,
+        senderAddress: String,
+        smtpAppPassword: String,
+        webhookUrl: String,
+        resendApiKey: String,
+        resendFrom: String
+    ) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            settingsStore.saveEmailDeliveryConfig(
+                mode = mode,
+                senderAddress = senderAddress,
+                smtpAppPassword = smtpAppPassword,
+                webhookUrl = webhookUrl,
+                resendApiKey = resendApiKey,
+                resendFrom = resendFrom
+            )
+            _needsMailerSetupHint.value = false
+            _statusMessage.value = "Configuração de envio de e-mail para Gmail salva!"
+            _isBusy.value = false
+        }
     }
 
     fun submitEmailVerificationCode(rawInput: String) {
         val challenge = _activeVerificationChallenge.value
         if (challenge == null) {
-            _statusMessage.value = "Gere um código de 6 dígitos (letras e números) primeiro."
+            _statusMessage.value = "Solicite o envio do código de 6 dígitos para o seu Gmail primeiro."
             return
         }
         val (outcome, updatedChallenge) = EmailVerificationHelper.verifyChallenge(challenge, rawInput)
@@ -544,9 +652,9 @@ class BackupViewModel(
                         _activeVerificationChallenge.value = null
                         _statusMessage.value = when (challenge.target) {
                             EmailVerificationTarget.PRIMARY ->
-                                "E-mail principal verificado com o código de 6 caracteres!"
+                                "E-mail principal verificado com sucesso!"
                             EmailVerificationTarget.RECOVERY ->
-                                "E-mail de recuperação confirmado e verificado com sucesso!"
+                                "E-mail de recuperação confirmado com sucesso!"
                         }
                     }.onFailure { err ->
                         _statusMessage.value = err.localizedMessage ?: "Falha ao salvar verificação."
@@ -555,7 +663,7 @@ class BackupViewModel(
                 }
             }
             CodeVerificationOutcome.InvalidFormat -> {
-                _statusMessage.value = "Digite os 6 caracteres (letras e números) do código exibido."
+                _statusMessage.value = "Digite os 6 caracteres (letras e números) recebidos no e-mail."
             }
             is CodeVerificationOutcome.Mismatch -> {
                 _activeVerificationChallenge.value = updatedChallenge
@@ -564,11 +672,11 @@ class BackupViewModel(
             }
             CodeVerificationOutcome.Expired -> {
                 _activeVerificationChallenge.value = null
-                _statusMessage.value = "Código expirado. Gere um novo código de 6 dígitos."
+                _statusMessage.value = "Código expirado. Solicite um novo envio para o Gmail."
             }
             CodeVerificationOutcome.LockedOut -> {
                 _activeVerificationChallenge.value = null
-                _statusMessage.value = "Muitas tentativas. Gere um novo código de 6 dígitos."
+                _statusMessage.value = "Muitas tentativas. Solicite um novo código para o Gmail."
             }
         }
     }
@@ -589,13 +697,11 @@ class BackupViewModel(
                         }
                         _statusMessage.value = "E-mail de recuperação removido da conta."
                     } else {
-                        val challenge = EmailVerificationHelper.createChallenge(
+                        dispatchChallengeToEmail(
                             targetEmail = saved,
-                            target = EmailVerificationTarget.RECOVERY
+                            target = EmailVerificationTarget.RECOVERY,
+                            sendFirebaseFallback = false
                         )
-                        _activeVerificationChallenge.value = challenge
-                        _statusMessage.value =
-                            "E-mail de recuperação salvo ($saved)! Confirme com o código ${challenge.code}."
                     }
                 }
                 .onFailure { err ->
@@ -610,7 +716,8 @@ class BackupViewModel(
             _isBusy.value = true
             authRepository.sendFirebaseEmailVerification()
                 .onSuccess {
-                    _statusMessage.value = "E-mail oficial de verificação enviado pelo Firebase Auth!"
+                    _statusMessage.value =
+                        "E-mail oficial enviado para seu Gmail! Abra sua caixa de entrada e clique no link."
                 }
                 .onFailure { err ->
                     _statusMessage.value = err.localizedMessage ?: "Não foi possível enviar o e-mail de verificação."
@@ -619,16 +726,27 @@ class BackupViewModel(
         }
     }
 
-    fun refreshFirebaseVerificationStatus() {
+    fun refreshFirebaseVerificationStatus(markCodeVerifiedIfConfirmed: Boolean = false) {
         viewModelScope.launch {
             _isBusy.value = true
             authRepository.reloadCurrentUserEmailVerified()
                 .onSuccess { verified ->
                     _firebaseEmailVerified.value = verified
-                    _statusMessage.value = if (verified) {
-                        "E-mail confirmado no Firebase Auth!"
+                    if (verified && markCodeVerifiedIfConfirmed) {
+                        userRepository.markPrimaryEmailCodeVerified()
+                            .onSuccess {
+                                _activeVerificationChallenge.value = null
+                                _statusMessage.value = "E-mail confirmado pelo link no Gmail! Acesso liberado."
+                            }
+                            .onFailure { err ->
+                                _statusMessage.value = err.localizedMessage ?: "Falha ao atualizar perfil."
+                            }
                     } else {
-                        "E-mail ainda pendente no Firebase Auth. Use o código de 6 dígitos ou confirme o link."
+                        _statusMessage.value = if (verified) {
+                            "E-mail confirmado no Google/Firebase!"
+                        } else {
+                            "Ainda aguardando confirmação no seu Gmail."
+                        }
                     }
                 }
                 .onFailure { err ->
@@ -643,7 +761,8 @@ class BackupViewModel(
             _isBusy.value = true
             authRepository.sendRecoveryEmail(targetEmail)
                 .onSuccess {
-                    _statusMessage.value = "Link de recuperação enviado para ${targetEmail.trim().lowercase()}!"
+                    _statusMessage.value =
+                        "Solicitação de recuperação enviada para ${EmailVerificationHelper.maskEmail(targetEmail)}!"
                 }
                 .onFailure { err ->
                     _statusMessage.value = err.localizedMessage ?: "Falha ao enviar recuperação para $targetEmail."

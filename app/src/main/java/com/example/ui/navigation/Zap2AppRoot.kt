@@ -77,7 +77,7 @@ import com.example.ui.aichat.AiChatViewModel
 import com.example.ui.auth.AuthScreen
 import com.example.ui.backup.BackupAndSettingsScreen
 import com.example.ui.backup.BackupViewModel
-import com.example.ui.backup.EmailVerificationGateDialog
+import com.example.ui.backup.EmailVerificationGateScreen
 import com.example.ui.calls.ActiveCallScreen
 import com.example.ui.calls.CallsHistoryScreen
 import com.example.ui.calls.CallsViewModel
@@ -291,6 +291,8 @@ private fun Zap2AuthenticatedShell(
     val activeVerificationChallenge by backupViewModel.activeVerificationChallenge.collectAsStateWithLifecycle()
     val backupBusy by backupViewModel.isBusy.collectAsStateWithLifecycle()
     val backupStatusMessage by backupViewModel.statusMessage.collectAsStateWithLifecycle()
+    val needsMailerSetupHint by backupViewModel.needsMailerSetupHint.collectAsStateWithLifecycle()
+    val lastSentMaskedEmail by backupViewModel.lastSentMaskedEmail.collectAsStateWithLifecycle()
     val userSettings by container.settingsStore.settingsFlow
         .collectAsStateWithLifecycle(initialValue = UserSettings())
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -406,6 +408,31 @@ private fun Zap2AuthenticatedShell(
         Triple(Zap2Route.CallsHistoryRoute, stringResource(R.string.nav_calls), Pair(Icons.Rounded.Call, Icons.Outlined.Call)),
         Triple(Zap2Route.BackupSettingsRoute, stringResource(R.string.nav_backup), Pair(Icons.Rounded.Backup, Icons.Outlined.Backup))
     )
+
+    val verificationEnabled = myProfile?.emailVerificationEnabled ?: userSettings.emailVerificationEnabled
+    val primaryVerified = myProfile?.emailCodeVerified ?: userSettings.emailCodeVerified
+
+    if (verificationEnabled && !primaryVerified) {
+        EmailVerificationGateScreen(
+            primaryEmail = myProfile?.email ?: Firebase.auth.currentUser?.email,
+            activeChallenge = activeVerificationChallenge,
+            settings = userSettings,
+            needsMailerSetupHint = needsMailerSetupHint,
+            lastSentMaskedEmail = lastSentMaskedEmail,
+            isBusy = backupBusy,
+            statusMessage = backupStatusMessage,
+            onSendCodeToGmail = { backupViewModel.generatePrimaryEmailCode(sendFirebaseFallback = true) },
+            onSendFirebaseLink = backupViewModel::sendFirebaseVerificationLink,
+            onConfirmViaFirebaseLink = {
+                backupViewModel.refreshFirebaseVerificationStatus(markCodeVerifiedIfConfirmed = true)
+            },
+            onSubmitCode = backupViewModel::submitEmailVerificationCode,
+            onDisableVerification = { backupViewModel.setEmailVerificationEnabled(false) },
+            onSaveEmailDeliveryConfig = backupViewModel::saveEmailDeliveryConfig,
+            onSignOut = { backupViewModel.signOut(context) {} }
+        )
+        return
+    }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val useNavRail = maxWidth >= 600.dp && isTopLevelTab
@@ -668,20 +695,6 @@ private fun Zap2AuthenticatedShell(
                                 )
                             }
                         }
-                    }
-
-                    val verificationEnabled = myProfile?.emailVerificationEnabled ?: userSettings.emailVerificationEnabled
-                    val primaryVerified = myProfile?.emailCodeVerified ?: userSettings.emailCodeVerified
-                    if (verificationEnabled && !primaryVerified) {
-                        EmailVerificationGateDialog(
-                            primaryEmail = myProfile?.email ?: Firebase.auth.currentUser?.email,
-                            activeChallenge = activeVerificationChallenge,
-                            isBusy = backupBusy,
-                            statusMessage = backupStatusMessage,
-                            onEnsureCodeGenerated = backupViewModel::generatePrimaryEmailCode,
-                            onSubmitCode = backupViewModel::submitEmailVerificationCode,
-                            onDisableVerification = { backupViewModel.setEmailVerificationEnabled(false) }
-                        )
                     }
                 }
             }

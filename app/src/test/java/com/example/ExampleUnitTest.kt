@@ -3,6 +3,7 @@ package com.example
 import com.example.data.local.DEFAULT_AI_MODEL
 import com.example.service.AiAssistantService
 import com.example.service.CodeVerificationOutcome
+import com.example.service.EmailDeliveryService
 import com.example.service.EmailVerificationHelper
 import com.example.service.EmailVerificationTarget
 import org.junit.Assert.*
@@ -79,5 +80,13 @@ class ExampleUnitTest {
     assertFalse(EmailVerificationHelper.isValidEmail("invalid/path@gmail.com"))
     assertFalse(EmailVerificationHelper.isValidEmail("not-an-email"))
     assertEquals("a***a@gmail.com", EmailVerificationHelper.maskEmail("alice.silva@gmail.com"))
+  }
+
+  @Test
+  fun emailDeliverySecurity_stripsCrlfAndRequiresHttps() {
+    assertEquals("user@gmail.comBcc:evil", EmailDeliveryService.sanitizeHeaderValue(" user@gmail.com\r\nBcc:evil\n "))
+    assertTrue(EmailDeliveryService.isSecureHttpsUrl("https://script.google.com/macros/s/abc/exec"))
+    assertFalse(EmailDeliveryService.isSecureHttpsUrl("http://script.google.com/macros/s/abc/exec"))
+    assertFalse(EmailDeliveryService.isSecureHttpsUrl("javascript:alert(1)"))
   }
 }
