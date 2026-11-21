@@ -137,6 +137,7 @@ private fun Zap2AuthenticatedShell(
                 ChatsViewModel(
                     chatRepository = container.chatRepository,
                     userRepository = container.userRepository,
+                    settingsStore = container.settingsStore,
                     currentUserId = currentUserId
                 )
             }
@@ -304,6 +305,13 @@ private fun Zap2AuthenticatedShell(
                                     },
                                     onNavigateToContacts = {
                                         navController.navigate(Zap2Route.ContactsRoute) {
+                                            popUpTo<Zap2Route.ChatsRoute> { saveState = true }
+                                            launchSingleTop = true
+                                            restoreState = true
+                                        }
+                                    },
+                                    onOpenProfile = {
+                                        navController.navigate(Zap2Route.BackupSettingsRoute) {
                                             popUpTo<Zap2Route.ChatsRoute> { saveState = true }
                                             launchSingleTop = true
                                             restoreState = true

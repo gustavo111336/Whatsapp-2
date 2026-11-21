@@ -2,6 +2,8 @@ package com.example.ui.chats
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.local.SettingsDataStore
+import com.example.data.local.UserSettings
 import com.example.data.model.ChatRoom
 import com.example.data.model.ContactEntry
 import com.example.data.model.PublicProfile
@@ -29,6 +31,7 @@ import kotlinx.coroutines.launch
 class ChatsViewModel(
     private val chatRepository: ChatRepository,
     private val userRepository: UserAndContactsRepository,
+    settingsStore: SettingsDataStore,
     val currentUserId: String
 ) : ViewModel() {
 
@@ -37,6 +40,9 @@ class ChatsViewModel(
 
     private val _actionMessage = MutableStateFlow<String?>(null)
     val actionMessage: StateFlow<String?> = _actionMessage.asStateFlow()
+
+    val userSettings: StateFlow<UserSettings> = settingsStore.settingsFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UserSettings())
 
     val myProfile: StateFlow<UserProfile?> = userRepository.observeMyProfile(currentUserId)
         .catch { error ->

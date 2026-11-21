@@ -6,6 +6,8 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,7 +27,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AddComment
 import androidx.compose.material.icons.rounded.Android
-import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.FolderZip
@@ -57,6 +58,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
@@ -70,13 +72,16 @@ import com.example.R
 import com.example.data.model.ChatRoom
 import com.example.data.model.UiState
 import com.example.ui.components.Zap2Avatar
+import com.example.ui.components.Zap2ProfileBanner
 import com.example.ui.components.formatRelativeDateTime
+import com.example.ui.theme.Zap2ExpressiveShapes
 
 @Composable
 fun ChatsListScreen(
     viewModel: ChatsViewModel,
     onOpenChat: (String) -> Unit,
     onNavigateToContacts: () -> Unit,
+    onOpenProfile: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val chatsState by viewModel.chatsState.collectAsStateWithLifecycle()
@@ -84,7 +89,15 @@ fun ChatsListScreen(
     val contacts by viewModel.savedContacts.collectAsStateWithLifecycle()
     val actionMessage by viewModel.actionMessage.collectAsStateWithLifecycle()
     val myProfile by viewModel.myProfile.collectAsStateWithLifecycle()
+    val userSettings by viewModel.userSettings.collectAsStateWithLifecycle()
     val peerProfiles by viewModel.peerProfiles.collectAsStateWithLifecycle()
+
+    val effectiveBannerUrl = myProfile?.bannerUrl?.takeIf { it.isNotBlank() }
+        ?: userSettings.cachedBannerUrl.takeIf { it.isNotBlank() }
+    val effectivePhotoUrl = myProfile?.photoUrl?.takeIf { it.isNotBlank() }
+        ?: userSettings.cachedPhotoUrl.takeIf { it.isNotBlank() }
+    val effectiveName = myProfile?.displayName?.takeIf { it.isNotBlank() }
+        ?: userSettings.cachedDisplayName.ifBlank { "Zap2" }
 
     var showCreateGroup by remember { mutableStateOf(false) }
 
@@ -98,48 +111,92 @@ fun ChatsListScreen(
                 .widthIn(max = 720.dp)
                 .padding(horizontal = 16.dp)
         ) {
-            // Expressive Header
-            Row(
+            // Expressive Profile Banner Header above Chats Tab
+            Card(
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                ),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 12.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                    .padding(top = 10.dp, bottom = 6.dp)
+                    .height(112.dp)
+                    .testTag("chats_top_banner_card")
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                Zap2ProfileBanner(
+                    bannerUrl = effectiveBannerUrl,
+                    onClick = onOpenProfile,
+                    modifier = Modifier.fillMaxSize()
                 ) {
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                        modifier = Modifier.size(40.dp)
+                    val hasCustomBanner = !effectiveBannerUrl.isNullOrBlank()
+                    val scrimBrush = if (hasCustomBanner) {
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color.Black.copy(alpha = 0.22f),
+                                Color.Black.copy(alpha = 0.68f)
+                            )
+                        )
+                    } else {
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f),
+                                MaterialTheme.colorScheme.surface.copy(alpha = 0.4f)
+                            )
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(scrimBrush)
+                            .padding(horizontal = 14.dp, vertical = 12.dp)
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Rounded.Bolt,
-                                contentDescription = "Zap2",
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .align(Alignment.BottomStart),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Zap2Avatar(
+                                    name = effectiveName,
+                                    photoUrl = effectivePhotoUrl,
+                                    online = true,
+                                    size = 48.dp,
+                                    modifier = Modifier.border(
+                                        2.dp,
+                                        if (hasCustomBanner) Color.White.copy(alpha = 0.85f)
+                                        else MaterialTheme.colorScheme.surface,
+                                        Zap2ExpressiveShapes.SquircleAvatar
+                                    )
+                                )
+                                Column {
+                                    Text(
+                                        text = "Zap2",
+                                        style = MaterialTheme.typography.headlineSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (hasCustomBanner) Color.White else MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = if (effectiveName != "Zap2") "Olá, $effectiveName" else "Conectado em tempo real",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (hasCustomBanner) Color.White.copy(alpha = 0.9f) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+
+                            FilledGroupShortcut(
+                                onClick = { showCreateGroup = true }
                             )
                         }
                     }
-                    Column {
-                        Text(
-                            text = "Zap2",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = myProfile?.displayName?.let { "Olá, $it" } ?: "Conectado em tempo real",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
                 }
-
-                FilledGroupShortcut(
-                    onClick = { showCreateGroup = true }
-                )
             }
 
             // Expressive Search Pill

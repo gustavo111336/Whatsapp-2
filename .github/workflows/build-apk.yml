@@ -9,6 +9,8 @@ on:
 jobs:
   build-apk:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -70,3 +72,22 @@ jobs:
           name: Zap2-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      - name: Publish APK to GitHub Release
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="build-${{ github.run_number }}"
+          TITLE="Zap2 APK - Build #${{ github.run_number }}"
+          APK_ASSET="Zap2-debug.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "$APK_ASSET"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK_ASSET" --clobber
+          else
+            gh release create "$TAG" "$APK_ASSET" \
+              --target "${{ github.sha }}" \
+              --title "$TITLE" \
+              --notes "APK gerado automaticamente pelo GitHub Actions (commit ${{ github.sha }}, branch ${{ github.ref_name }})." \
+              --latest
+          fi

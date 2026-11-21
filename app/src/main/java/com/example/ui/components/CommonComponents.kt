@@ -13,8 +13,10 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
@@ -29,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -36,6 +39,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -66,7 +70,104 @@ fun isVideoMediaUrl(url: String?): Boolean {
         lower.contains(".mp4?") ||
         lower.contains(".webm?") ||
         lower.contains("video%2f") ||
-        lower.contains("avatar_video")
+        lower.contains("avatar_video") ||
+        lower.contains("banner_video")
+}
+
+@Composable
+fun Zap2ProfileBanner(
+    bannerUrl: String?,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+    overlayContent: @Composable BoxScope.() -> Unit = {}
+) {
+    val context = LocalContext.current
+    val cleanUrl = bannerUrl?.trim().orEmpty()
+    val needsManaged = FreeMediaStorageManager.requiresManagedResolution(cleanUrl)
+    val resolvedModel by produceState<Any?>(
+        initialValue = if (needsManaged) null else cleanUrl.takeIf { it.isNotEmpty() },
+        key1 = cleanUrl
+    ) {
+        value = if (cleanUrl.isEmpty()) {
+            null
+        } else if (needsManaged) {
+            FreeMediaStorageManager.resolveMediaModel(context, cleanUrl)
+        } else {
+            cleanUrl
+        }
+    }
+
+    var videoPlaybackFailed by remember(cleanUrl) { mutableStateOf(false) }
+
+    val fallbackGradient = Brush.linearGradient(
+        colors = listOf(
+            MaterialTheme.colorScheme.primaryContainer,
+            MaterialTheme.colorScheme.tertiaryContainer
+        )
+    )
+
+    val boxModifier = if (onClick != null) {
+        modifier
+            .background(fallbackGradient)
+            .clickable(onClick = onClick)
+    } else {
+        modifier.background(fallbackGradient)
+    }
+
+    Box(modifier = boxModifier) {
+        val activeModel = resolvedModel
+        val videoSourceString = when (activeModel) {
+            is File -> Uri.fromFile(activeModel).toString()
+            is String -> activeModel
+            else -> ""
+        }
+        val isVideoFile = (activeModel as? File)?.extension?.lowercase() in setOf("mp4", "webm", "m4v", "mov")
+        val showAsVideo = cleanUrl.isNotEmpty() &&
+            (isVideoMediaUrl(cleanUrl) || isVideoFile) &&
+            videoSourceString.isNotEmpty() &&
+            !videoPlaybackFailed
+
+        when {
+            showAsVideo -> {
+                LoopingMutedVideoAvatar(
+                    videoUrl = videoSourceString,
+                    onError = { videoPlaybackFailed = true },
+                    fallbackContent = {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(fallbackGradient)
+                        )
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+            activeModel != null -> {
+                SubcomposeAsyncImage(
+                    model = activeModel,
+                    contentDescription = "Banner do perfil",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                    loading = {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(fallbackGradient)
+                        )
+                    },
+                    error = {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(fallbackGradient)
+                        )
+                    }
+                )
+            }
+        }
+
+        overlayContent()
+    }
 }
 
 @Composable
@@ -242,9 +343,10 @@ fun LoopingMutedVideoAvatar(
                 fallbackContent()
             }
         }
-        AndroidView(
-            factory = { ctx ->
-                TextureView(ctx).apply {
+        key(videoUrl) {
+            AndroidView(
+                factory = { ctx ->
+                    TextureView(ctx).apply {
                     val textureView = this
                     isOpaque = false
                     surfaceTextureListener = object : TextureView.SurfaceTextureListener {
@@ -317,9 +419,10 @@ fun LoopingMutedVideoAvatar(
                         override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) = Unit
                     }
                 }
-            },
-            modifier = Modifier.fillMaxSize()
-        )
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
     }
 }
 

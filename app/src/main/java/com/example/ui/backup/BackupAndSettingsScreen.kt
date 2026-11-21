@@ -72,15 +72,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import coil.compose.SubcomposeAsyncImage
 import com.example.data.local.STORAGE_MODE_AUTO
 import com.example.data.local.STORAGE_MODE_FIRESTORE
 import com.example.data.local.STORAGE_MODE_GITHUB
@@ -89,6 +86,7 @@ import com.example.data.model.ThemeMode
 import com.example.data.remote.FreeMediaStorageManager
 import com.example.service.ZipArchiveHelper
 import com.example.ui.components.Zap2Avatar
+import com.example.ui.components.Zap2ProfileBanner
 import com.example.ui.components.formatRelativeDateTime
 import java.util.Date
 
@@ -140,18 +138,19 @@ fun BackupAndSettingsScreen(
     var githubBranchInput by remember(settings.githubBranch) { mutableStateOf(settings.githubBranch) }
     var githubTokenInput by remember(settings.githubToken) { mutableStateOf(settings.githubToken) }
 
-    val resolvedBannerModel by produceState<Any?>(
-        initialValue = if (FreeMediaStorageManager.requiresManagedResolution(effectiveBannerUrl)) null else effectiveBannerUrl,
-        key1 = effectiveBannerUrl
-    ) {
-        value = FreeMediaStorageManager.resolveMediaModel(context, effectiveBannerUrl)
-    }
-
     val bannerGalleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
             viewModel.uploadBannerFromGallery(uri)
+        }
+    }
+
+    val bannerVideoLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.uploadBannerVideo(uri)
         }
     }
 
@@ -283,44 +282,15 @@ fun BackupAndSettingsScreen(
                                 .fillMaxWidth()
                                 .height(150.dp)
                         ) {
-                            val bannerGradient = Brush.linearGradient(
-                                colors = listOf(
-                                    MaterialTheme.colorScheme.primaryContainer,
-                                    MaterialTheme.colorScheme.tertiaryContainer
-                                )
-                            )
-                            Box(
+                            Zap2ProfileBanner(
+                                bannerUrl = effectiveBannerUrl,
+                                onClick = { showBannerOptionsDialog = true },
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(132.dp)
                                     .clip(RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp))
-                                    .background(bannerGradient)
-                                    .clickable { showBannerOptionsDialog = true }
                                     .testTag("profile_banner_header")
-                            ) {
-                                if (resolvedBannerModel != null) {
-                                    SubcomposeAsyncImage(
-                                        model = resolvedBannerModel,
-                                        contentDescription = "Banner do perfil",
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxSize(),
-                                        loading = {
-                                            Box(
-                                                modifier = Modifier
-                                                    .fillMaxSize()
-                                                    .background(bannerGradient)
-                                            )
-                                        },
-                                        error = {
-                                            Box(
-                                                modifier = Modifier
-                                                    .fillMaxSize()
-                                                    .background(bannerGradient)
-                                            )
-                                        }
-                                    )
-                                }
-                            }
+                            )
 
                             Surface(
                                 onClick = { showBannerOptionsDialog = true },
@@ -1047,6 +1017,11 @@ fun BackupAndSettingsScreen(
             title = { Text("Banner do Perfil") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Defina uma imagem, GIF ou vídeo MP4 em loop automático sem som (também aparece no topo da aba Conversas).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     Button(
                         onClick = {
                             showBannerOptionsDialog = false
@@ -1062,13 +1037,31 @@ fun BackupAndSettingsScreen(
                     ) {
                         Icon(Icons.Rounded.PhotoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.size(6.dp))
-                        Text("Escolher imagem da galeria")
+                        Text("Foto ou GIF da galeria")
+                    }
+
+                    Button(
+                        onClick = {
+                            showBannerOptionsDialog = false
+                            bannerVideoLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                            )
+                        },
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("banner_pick_video_button")
+                    ) {
+                        Icon(Icons.Rounded.Videocam, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.size(6.dp))
+                        Text("Vídeo MP4 da galeria (em loop)")
                     }
 
                     OutlinedTextField(
                         value = bannerUrlInput,
                         onValueChange = { bannerUrlInput = it },
-                        label = { Text("Ou cole um link (https://...)") },
+                        label = { Text("URL direta (imagem, .gif ou .mp4)") },
                         singleLine = true,
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier

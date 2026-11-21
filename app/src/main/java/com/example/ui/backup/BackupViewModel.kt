@@ -99,11 +99,30 @@ class BackupViewModel(
             _mediaUploadProgress.value = 0f
             userRepository.updateProfileBanner(
                 localImageUri = uri,
+                isVideo = false,
                 onProgress = { _mediaUploadProgress.value = it }
             ).onSuccess {
                 _statusMessage.value = "Banner atualizado na nuvem e salvo no cache local!"
             }.onFailure { err ->
                 _statusMessage.value = err.localizedMessage ?: "Falha ao enviar banner."
+            }
+            _mediaUploadProgress.value = null
+            _isBusy.value = false
+        }
+    }
+
+    fun uploadBannerVideo(uri: Uri) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            _mediaUploadProgress.value = 0f
+            userRepository.updateProfileBanner(
+                localImageUri = uri,
+                isVideo = true,
+                onProgress = { _mediaUploadProgress.value = it }
+            ).onSuccess {
+                _statusMessage.value = "Banner em vídeo (MP4 em loop) atualizado!"
+            }.onFailure { err ->
+                _statusMessage.value = err.localizedMessage ?: "Falha ao enviar vídeo do banner."
             }
             _mediaUploadProgress.value = null
             _isBusy.value = false
@@ -118,7 +137,7 @@ class BackupViewModel(
                     _statusMessage.value = if (saved.isBlank()) {
                         "Banner removido do perfil."
                     } else {
-                        "Banner salvo na nuvem e no backup local!"
+                        "Banner salvo na nuvem e no backup local (imagem, GIF ou MP4)!"
                     }
                 }
                 .onFailure { err ->

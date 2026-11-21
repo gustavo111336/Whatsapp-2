@@ -267,6 +267,7 @@ class UserAndContactsRepository(
     suspend fun updateProfileBanner(
         bannerUrl: String? = null,
         localImageUri: Uri? = null,
+        isVideo: Boolean = false,
         onProgress: (Float) -> Unit = {}
     ): Result<String> {
         val uid = auth.currentUser?.uid ?: return Result.failure(IllegalStateException("Não autenticado"))
@@ -274,7 +275,7 @@ class UserAndContactsRepository(
             val finalUrl = when {
                 localImageUri != null -> {
                     val ctx = context ?: return Result.failure(IllegalStateException("Contexto indisponível."))
-                    val (localFile, mime) = prepareProfileMediaFile(ctx, localImageUri, "banner_$uid", isVideo = false, maxDim = 1600)
+                    val (localFile, mime) = prepareProfileMediaFile(ctx, localImageUri, "banner_$uid", isVideo = isVideo, maxDim = 1600)
                     uploadProfileMediaFree(
                         ownerId = uid,
                         file = localFile,
