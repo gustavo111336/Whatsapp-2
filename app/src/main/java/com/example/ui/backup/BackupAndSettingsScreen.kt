@@ -141,10 +141,10 @@ fun BackupAndSettingsScreen(
     var githubTokenInput by remember(settings.githubToken) { mutableStateOf(settings.githubToken) }
 
     val resolvedBannerModel by produceState<Any?>(
-        initialValue = if (FreeMediaStorageManager.isChunkUri(effectiveBannerUrl)) null else effectiveBannerUrl,
+        initialValue = if (FreeMediaStorageManager.requiresManagedResolution(effectiveBannerUrl)) null else effectiveBannerUrl,
         key1 = effectiveBannerUrl
     ) {
-        value = FreeMediaStorageManager.resolveIfChunkUri(context, effectiveBannerUrl)
+        value = FreeMediaStorageManager.resolveMediaModel(context, effectiveBannerUrl)
     }
 
     val bannerGalleryLauncher = rememberLauncherForActivityResult(
@@ -778,7 +778,7 @@ fun BackupAndSettingsScreen(
                             }
                         }
                         Text(
-                            text = "Por padrão, fotos, vídeos, PDFs, APKs, ZIPs e MP4s são salvos em blocos gratuitos no Firestore (até 35 MB). Opcionalmente, conecte seu repositório GitHub para salvar arquivos direto nele (até 200 MB grátis via GitHub Releases).",
+                            text = "No Firestore Grátis (padrão), cada arquivo de chat fica visível só para quem está naquela conversa e backups só para você (até 35 MB). No GitHub Repo, você pode usar repositório privado para seus backups e uso pessoal (até 200 MB); quem for abrir arquivos de um repo privado precisará ter acesso/token.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

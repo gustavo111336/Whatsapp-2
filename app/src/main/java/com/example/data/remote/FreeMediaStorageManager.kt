@@ -437,27 +437,53 @@ class FreeMediaStorageManager(
         githubToken: String?,
         onProgress: (Float) -> Unit
     ) {
-        val urlObj = URL(rawUrl)
-        val conn = (urlObj.openConnection() as HttpURLConnection).apply {
-            connectTimeout = 15_000
-            readTimeout = 45_000
-            instanceFollowRedirects = true
-            setRequestProperty("User-Agent", "Zap2-Android")
-            val host = urlObj.host.lowercase()
-            if (!githubToken.isNullOrBlank() &&
-                (host == "api.github.com" || host == "raw.githubusercontent.com" || host == "github.com")
-            ) {
-                setRequestProperty("Authorization", "Bearer $githubToken")
+        var currentUrl = rawUrl
+        var sendAuth = shouldAttachGitHubAuth(currentUrl, githubToken)
+        var redirects = 0
+        var conn: HttpURLConnection? = null
+
+        while (true) {
+            val urlObj = URL(currentUrl)
+            val nextConn = (urlObj.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15_000
+                readTimeout = 45_000
+                instanceFollowRedirects = false
+                setRequestProperty("User-Agent", "Zap2-Android")
+                if (urlObj.host.equals("api.github.com", ignoreCase = true) &&
+                    urlObj.path.contains("/releases/assets/")
+                ) {
+                    setRequestProperty("Accept", "application/octet-stream")
+                }
+                if (sendAuth && !githubToken.isNullOrBlank()) {
+                    setRequestProperty("Authorization", "Bearer $githubToken")
+                }
             }
+            conn = nextConn
+            val code = nextConn.responseCode
+            if (code in listOf(301, 302, 303, 307, 308)) {
+                val location = nextConn.getHeaderField("Location")
+                nextConn.disconnect()
+                if (location.isNullOrBlank() || redirects >= 5) {
+                    throw IllegalStateException("Redirecionamento inválido ao baixar arquivo (HTTP $code).")
+                }
+                currentUrl = URL(urlObj, location).toString()
+                // Never forward GitHub Bearer token to pre-signed S3 / objects.githubusercontent.com redirects
+                sendAuth = shouldAttachGitHubAuth(currentUrl, githubToken)
+                redirects++
+                continue
+            }
+            break
         }
+
+        val activeConn = conn ?: throw IllegalStateException("Falha ao abrir conexão.")
         try {
-            val code = conn.responseCode
+            val code = activeConn.responseCode
             if (code !in 200..299) {
                 throw IllegalStateException("Erro ao baixar arquivo (HTTP $code).")
             }
-            val total = conn.contentLengthLong.coerceAtLeast(expectedSizeBytes ?: 0L)
+            val total = activeConn.contentLengthLong.coerceAtLeast(expectedSizeBytes ?: 0L)
             var copied = 0L
-            conn.inputStream.use { input ->
+            activeConn.inputStream.use { input ->
                 destFile.outputStream().use { output ->
                     val buf = ByteArray(16_384)
                     var read: Int
@@ -471,8 +497,14 @@ class FreeMediaStorageManager(
                 }
             }
         } finally {
-            conn.disconnect()
+            activeConn.disconnect()
         }
+    }
+
+    private fun shouldAttachGitHubAuth(url: String, token: String?): Boolean {
+        if (token.isNullOrBlank()) return false
+        val host = runCatching { URL(url).host.lowercase() }.getOrDefault("")
+        return host == "api.github.com" || host == "raw.githubusercontent.com" || host == "github.com"
     }
 
     private suspend fun uploadToGitHubRepository(
@@ -584,11 +616,8 @@ class FreeMediaStorageManager(
                 }
 
                 onProgress(fileTotal, fileTotal)
-                val json = JSONObject(respText)
-                val downloadUrl = json.optJSONObject("content")?.optString("download_url").orEmpty()
-                return downloadUrl.ifBlank {
-                    "https://raw.githubusercontent.com/${config.ownerRepo}/${config.branch}/$encodedPath"
-                }
+                // Always return canonical non-expiring raw URL (without short-lived ?token= params)
+                return "https://raw.githubusercontent.com/${config.ownerRepo}/${config.branch}/$encodedPath"
             } finally {
                 conn.disconnect()
             }
@@ -665,13 +694,39 @@ class FreeMediaStorageManager(
                 throw IllegalStateException("Erro ao enviar asset grande no GitHub (HTTP $code): $ghMsg")
             }
             val json = JSONObject(respText)
+            val isPrivate = isRepoPrivate(config)
+            val assetApiUrl = json.optString("url")
             val browserUrl = json.optString("browser_download_url")
-            return browserUrl.ifBlank {
-                throw IllegalStateException("GitHub não retornou a URL do asset.")
+            return when {
+                isPrivate && assetApiUrl.isNotBlank() -> assetApiUrl
+                browserUrl.isNotBlank() -> browserUrl
+                assetApiUrl.isNotBlank() -> assetApiUrl
+                else -> throw IllegalStateException("GitHub não retornou a URL do asset.")
             }
         } finally {
             conn.disconnect()
         }
+    }
+
+    private fun isRepoPrivate(config: GitHubRepoConfig): Boolean {
+        return runCatching {
+            val conn = (URL("https://api.github.com/repos/${config.ownerRepo}").openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 10_000
+                readTimeout = 12_000
+                setRequestProperty("Authorization", "Bearer ${config.token}")
+                setRequestProperty("Accept", "application/vnd.github+json")
+                setRequestProperty("User-Agent", "Zap2-Android")
+            }
+            try {
+                if (conn.responseCode in 200..299) {
+                    val body = conn.inputStream.bufferedReader().use { it.readText() }
+                    JSONObject(body).optBoolean("private", false)
+                } else false
+            } finally {
+                conn.disconnect()
+            }
+        }.getOrDefault(false)
     }
 
     private fun ensureZap2MediaRelease(config: GitHubRepoConfig): Long {
@@ -822,18 +877,33 @@ class FreeMediaStorageManager(
         fun isChunkUri(url: String?): Boolean =
             url?.trim()?.startsWith("zap2chunk://", ignoreCase = true) == true
 
+        fun requiresManagedResolution(url: String?): Boolean {
+            val clean = url?.trim().orEmpty()
+            if (clean.isEmpty()) return false
+            if (isChunkUri(clean)) return true
+            val host = runCatching { Uri.parse(clean).host?.lowercase().orEmpty() }.getOrDefault("")
+            return host == "raw.githubusercontent.com" ||
+                host == "api.github.com" ||
+                host == "github.com"
+        }
+
         fun parseExtFromChunkUri(url: String): String? {
             if (!isChunkUri(url)) return null
             return Uri.parse(url).getQueryParameter("ext")?.lowercase()?.takeIf { it.isNotBlank() }
         }
 
         suspend fun resolveIfChunkUri(context: Context, url: String?): Any? {
+            return resolveMediaModel(context, url)
+        }
+
+        suspend fun resolveMediaModel(context: Context, url: String?): Any? {
             val clean = url?.trim().orEmpty()
             if (clean.isBlank()) return null
-            if (!isChunkUri(clean)) return clean
+            if (!requiresManagedResolution(clean)) return clean
             val manager = (context.applicationContext as? Zap2Application)?.container?.freeStorageManager
-                ?: return null
+                ?: return clean.takeIf { !isChunkUri(it) }
             return manager.resolveToFile(clean).getOrNull()
+                ?: clean.takeIf { !isChunkUri(it) }
         }
     }
 }

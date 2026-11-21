@@ -1187,8 +1187,8 @@ private fun MessageBubbleRow(
                                     val b64 = remoteUrl.substringAfter(",", "")
                                     runCatching { Base64.decode(b64, Base64.DEFAULT) }.getOrNull()
                                 }
-                                FreeMediaStorageManager.isChunkUri(remoteUrl) -> {
-                                    FreeMediaStorageManager.resolveIfChunkUri(context, remoteUrl)
+                                FreeMediaStorageManager.requiresManagedResolution(remoteUrl) -> {
+                                    FreeMediaStorageManager.resolveMediaModel(context, remoteUrl)
                                 }
                                 else -> remoteUrl
                             }

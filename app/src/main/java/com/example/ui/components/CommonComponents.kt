@@ -89,14 +89,15 @@ fun Zap2Avatar(
     }
 
     val cleanUrl = photoUrl?.trim().orEmpty()
+    val needsManaged = FreeMediaStorageManager.requiresManagedResolution(cleanUrl)
     val resolvedModel by produceState<Any?>(
-        initialValue = if (FreeMediaStorageManager.isChunkUri(cleanUrl)) null else cleanUrl.takeIf { it.isNotEmpty() },
+        initialValue = if (needsManaged) null else cleanUrl.takeIf { it.isNotEmpty() },
         key1 = cleanUrl
     ) {
         value = if (cleanUrl.isEmpty()) {
             null
-        } else if (FreeMediaStorageManager.isChunkUri(cleanUrl)) {
-            FreeMediaStorageManager.resolveIfChunkUri(context, cleanUrl)
+        } else if (needsManaged) {
+            FreeMediaStorageManager.resolveMediaModel(context, cleanUrl)
         } else {
             cleanUrl
         }
