@@ -401,6 +401,10 @@ class BackupViewModel(
         viewModelScope.launch { settingsStore.setAutoCloudBackup(enabled) }
     }
 
+    fun setNotificationsEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsStore.setNotificationsEnabled(enabled) }
+    }
+
     fun setDefaultZipExtractUri(uriString: String) {
         viewModelScope.launch {
             settingsStore.setDefaultZipExtractUri(uriString)

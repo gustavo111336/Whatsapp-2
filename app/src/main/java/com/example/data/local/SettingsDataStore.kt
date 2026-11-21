@@ -32,7 +32,8 @@ data class UserSettings(
     val storageBackendMode: String = STORAGE_MODE_AUTO,
     val githubRepo: String = "",
     val githubBranch: String = "main",
-    val githubToken: String = ""
+    val githubToken: String = "",
+    val notificationsEnabled: Boolean = true
 )
 
 class SettingsDataStore(private val context: Context) {
@@ -51,6 +52,7 @@ class SettingsDataStore(private val context: Context) {
         val GITHUB_REPO = stringPreferencesKey("github_repo")
         val GITHUB_BRANCH = stringPreferencesKey("github_branch")
         val GITHUB_TOKEN = stringPreferencesKey("github_token")
+        val NOTIFICATIONS_ENABLED = booleanPreferencesKey("notifications_enabled")
     }
 
     val settingsFlow: Flow<UserSettings> = context.dataStore.data.map { prefs ->
@@ -70,7 +72,8 @@ class SettingsDataStore(private val context: Context) {
             storageBackendMode = prefs[Keys.STORAGE_BACKEND_MODE] ?: STORAGE_MODE_AUTO,
             githubRepo = prefs[Keys.GITHUB_REPO] ?: "",
             githubBranch = (prefs[Keys.GITHUB_BRANCH] ?: "main").ifBlank { "main" },
-            githubToken = prefs[Keys.GITHUB_TOKEN] ?: ""
+            githubToken = prefs[Keys.GITHUB_TOKEN] ?: "",
+            notificationsEnabled = prefs[Keys.NOTIFICATIONS_ENABLED] ?: true
         )
     }
 
@@ -96,6 +99,10 @@ class SettingsDataStore(private val context: Context) {
 
     suspend fun setDefaultZipExtractUri(uriString: String) {
         context.dataStore.edit { it[Keys.DEFAULT_ZIP_EXTRACT_URI] = uriString }
+    }
+
+    suspend fun setNotificationsEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.NOTIFICATIONS_ENABLED] = enabled }
     }
 
     suspend fun saveFreeStorageConfig(

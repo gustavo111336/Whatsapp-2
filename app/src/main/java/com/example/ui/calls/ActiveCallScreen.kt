@@ -56,6 +56,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.remote.WebRtcCallManager
+import com.example.service.Zap2NotificationHelper
 import com.example.ui.components.Zap2Avatar
 import com.example.ui.theme.ZapCallRed
 import kotlinx.coroutines.delay
@@ -171,6 +172,21 @@ fun ActiveCallScreen(
     val peerName = session?.let {
         if (it.callerId == currentUserId) it.calleeName else it.callerName
     } ?: "Chamada Zap2"
+
+    LaunchedEffect(callId, peerName, isVideo) {
+        Zap2NotificationHelper.showOngoingCallNotification(
+            context = context,
+            callId = callId,
+            peerName = peerName,
+            isVideo = isVideo
+        )
+    }
+
+    DisposableEffect(callId) {
+        onDispose {
+            Zap2NotificationHelper.cancelCallNotification(context, callId)
+        }
+    }
 
     val formattedDuration = if (elapsedSeconds > 0L) {
         "${elapsedSeconds / 60}:${(elapsedSeconds % 60).toString().padStart(2, '0')}"

@@ -2,9 +2,12 @@ package com.example
 
 import android.app.Activity
 import android.app.Application
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.Build
 import android.os.Bundle
 import coil.ImageLoader
@@ -117,20 +120,39 @@ class Zap2Application : Application(), ImageLoaderFactory {
             val messagesChannel = NotificationChannel(
                 CHANNEL_MESSAGES,
                 getString(R.string.notification_channel_messages),
-                NotificationManager.IMPORTANCE_DEFAULT
-            )
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Alertas de novas mensagens recebidas no Zap2"
+                enableVibration(true)
+                enableLights(true)
+                lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+            }
+
+            val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            val ringtoneAttrs = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+
             val callsChannel = NotificationChannel(
                 CHANNEL_CALLS,
                 getString(R.string.notification_channel_calls),
                 NotificationManager.IMPORTANCE_HIGH
-            )
+            ).apply {
+                description = "Notificações grandes e persistentes de chamadas recebidas e em andamento"
+                setSound(ringtoneUri, ringtoneAttrs)
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0L, 600L, 400L, 600L)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                setBypassDnd(true)
+            }
             manager.createNotificationChannel(messagesChannel)
             manager.createNotificationChannel(callsChannel)
         }
     }
 
     companion object {
-        const val CHANNEL_MESSAGES = "zap2_messages"
-        const val CHANNEL_CALLS = "zap2_calls"
+        const val CHANNEL_MESSAGES = "zap2_messages_v2"
+        const val CHANNEL_CALLS = "zap2_calls_v2"
     }
 }

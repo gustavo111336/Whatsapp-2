@@ -1,8 +1,11 @@
 package com.example.ui.backup
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -40,6 +43,7 @@ import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.FolderZip
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.PhotoLibrary
@@ -84,6 +88,7 @@ import com.example.data.local.STORAGE_MODE_GITHUB
 import com.example.data.model.BackupSummary
 import com.example.data.model.ThemeMode
 import com.example.data.remote.FreeMediaStorageManager
+import com.example.service.Zap2NotificationHelper
 import com.example.service.ZipArchiveHelper
 import com.example.ui.components.Zap2Avatar
 import com.example.ui.components.Zap2ProfileBanner
@@ -160,6 +165,16 @@ fun BackupAndSettingsScreen(
         if (uri != null) {
             viewModel.uploadAvatarImageOrGif(uri)
         }
+    }
+
+    var hasNotificationPermission by remember {
+        mutableStateOf(Zap2NotificationHelper.hasNotificationPermission(context))
+    }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasNotificationPermission = granted || Zap2NotificationHelper.hasNotificationPermission(context)
     }
 
     val avatarVideoLauncher = rememberLauncherForActivityResult(
@@ -900,6 +915,118 @@ fun BackupAndSettingsScreen(
                                 checked = settings.dynamicColor,
                                 onCheckedChange = viewModel::setDynamicColor
                             )
+                        }
+                    }
+                }
+            }
+
+            // Notifications & Persistent Call Alerts Card
+            item {
+                Card(
+                    shape = RoundedCornerShape(26.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                Icons.Rounded.NotificationsActive,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "Notificações e Chamadas",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Text(
+                            text = "Exibe notificações de novas mensagens e uma notificação grande e fixa (não sai ao deslizar) com Atender/Recusar quando alguém liga.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Ativar alertas de mensagens e ligações",
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Switch(
+                                checked = settings.notificationsEnabled,
+                                onCheckedChange = viewModel::setNotificationsEnabled
+                            )
+                        }
+
+                        if (!hasNotificationPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            Button(
+                                onClick = {
+                                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                },
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
+                                    .testTag("grant_notifications_button")
+                            ) {
+                                Text("Permitir Notificações no Android")
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    if (!Zap2NotificationHelper.hasNotificationPermission(context) &&
+                                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                                    ) {
+                                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                    } else {
+                                        Zap2NotificationHelper.showMessageNotification(
+                                            context = context,
+                                            chatId = null,
+                                            title = "Zap2 Notificações",
+                                            body = "Notificações de mensagens e chamadas ativas!",
+                                            isTest = true
+                                        )
+                                    }
+                                },
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                                    .testTag("test_notification_button")
+                            ) {
+                                Text("Testar notificação")
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                        putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                                    }
+                                    runCatching { context.startActivity(intent) }
+                                },
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                                    .testTag("system_notification_settings_button")
+                            ) {
+                                Text("Config. Android")
+                            }
                         }
                     }
                 }

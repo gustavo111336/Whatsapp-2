@@ -40,11 +40,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -57,6 +62,9 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.example.AppContainer
 import com.example.R
+import com.example.data.local.UserSettings
+import com.example.service.Zap2NotificationHelper
+import com.example.service.Zap2NotificationNavigation
 import com.example.ui.auth.AuthScreen
 import com.example.ui.backup.BackupAndSettingsScreen
 import com.example.ui.backup.BackupViewModel
@@ -77,7 +85,11 @@ import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.tasks.await
 
 @Composable
-fun Zap2AppRoot(container: AppContainer) {
+fun Zap2AppRoot(
+    container: AppContainer,
+    pendingNotificationNav: Zap2NotificationNavigation? = null,
+    onConsumeNotificationNav: () -> Unit = {}
+) {
     val authUser by container.authRepository.observeAuthState()
         .collectAsStateWithLifecycle(initialValue = Firebase.auth.currentUser)
 
@@ -101,7 +113,9 @@ fun Zap2AppRoot(container: AppContainer) {
 
             Zap2AuthenticatedShell(
                 container = container,
-                currentUserId = user.uid
+                currentUserId = user.uid,
+                pendingNotificationNav = pendingNotificationNav,
+                onConsumeNotificationNav = onConsumeNotificationNav
             )
         }
     }
@@ -110,7 +124,9 @@ fun Zap2AppRoot(container: AppContainer) {
 @Composable
 private fun Zap2AuthenticatedShell(
     container: AppContainer,
-    currentUserId: String
+    currentUserId: String,
+    pendingNotificationNav: Zap2NotificationNavigation?,
+    onConsumeNotificationNav: () -> Unit
 ) {
     val context = LocalContext.current
     val navController = rememberNavController()
@@ -187,6 +203,9 @@ private fun Zap2AuthenticatedShell(
     )
 
     val incomingCalls by callsViewModel.incomingCalls.collectAsStateWithLifecycle()
+    val userSettings by container.settingsStore.settingsFlow
+        .collectAsStateWithLifecycle(initialValue = UserSettings())
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     val isTopLevelTab = currentDest?.hasRoute<Zap2Route.ChatsRoute>() == true ||
         currentDest?.hasRoute<Zap2Route.ContactsRoute>() == true ||
@@ -194,6 +213,104 @@ private fun Zap2AuthenticatedShell(
         currentDest?.hasRoute<Zap2Route.BackupSettingsRoute>() == true
 
     val isOnCallScreen = currentDest?.hasRoute<Zap2Route.ActiveCallRoute>() == true
+    val activeChatId = if (currentDest?.hasRoute<Zap2Route.ChatDetailRoute>() == true) {
+        runCatching { backStackEntry?.toRoute<Zap2Route.ChatDetailRoute>()?.chatId }.getOrNull()
+    } else {
+        null
+    }
+
+    val latestActiveChatId by rememberUpdatedState(activeChatId)
+    val latestNotificationsEnabled by rememberUpdatedState(userSettings.notificationsEnabled)
+
+    LaunchedEffect(activeChatId) {
+        if (!activeChatId.isNullOrBlank()) {
+            Zap2NotificationHelper.cancelChatNotification(context, activeChatId)
+        }
+    }
+
+    LaunchedEffect(pendingNotificationNav) {
+        when (val target = pendingNotificationNav) {
+            is Zap2NotificationNavigation.OpenChat -> {
+                Zap2NotificationHelper.cancelChatNotification(context, target.chatId)
+                navController.navigate(Zap2Route.ChatDetailRoute(target.chatId)) {
+                    launchSingleTop = true
+                }
+                onConsumeNotificationNav()
+            }
+            is Zap2NotificationNavigation.OpenCall -> {
+                Zap2NotificationHelper.cancelCallNotification(context, target.callId)
+                navController.navigate(
+                    Zap2Route.ActiveCallRoute(
+                        callId = target.callId,
+                        isIncoming = target.isIncoming,
+                        isVideo = target.isVideo
+                    )
+                ) {
+                    launchSingleTop = true
+                }
+                onConsumeNotificationNav()
+            }
+            null -> Unit
+        }
+    }
+
+    // Real-time message notification watcher
+    LaunchedEffect(currentUserId) {
+        val seenChatTimestamps = mutableMapOf<String, Long>()
+        var initialized = false
+        container.chatRepository.observeChats(currentUserId).collect { chats ->
+            if (!initialized) {
+                chats.forEach { chat ->
+                    seenChatTimestamps[chat.id] = chat.lastMessageAt?.toDate()?.time ?: 0L
+                }
+                initialized = true
+            } else {
+                val isAppResumed = lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+                chats.forEach { chat ->
+                    val ts = chat.lastMessageAt?.toDate()?.time ?: 0L
+                    val prev = seenChatTimestamps[chat.id] ?: 0L
+                    if (ts > prev) {
+                        seenChatTimestamps[chat.id] = ts
+                        val fromOther = chat.lastMessageSenderId.isNotBlank() &&
+                            chat.lastMessageSenderId != currentUserId
+                        val viewingThisChat = isAppResumed && latestActiveChatId == chat.id
+                        if (latestNotificationsEnabled && fromOther && !viewingThisChat) {
+                            Zap2NotificationHelper.showMessageNotification(
+                                context = context,
+                                chatId = chat.id,
+                                title = chat.resolveDisplayTitle(currentUserId),
+                                body = Zap2NotificationHelper.messagePreviewForChat(chat)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Real-time persistent CallStyle incoming call notification watcher
+    val notifiedIncomingCallIds = remember { mutableSetOf<String>() }
+    LaunchedEffect(incomingCalls, isOnCallScreen, userSettings.notificationsEnabled) {
+        val activeIds = incomingCalls.map { it.id }.toSet()
+        notifiedIncomingCallIds.filter { it !in activeIds || !userSettings.notificationsEnabled }.forEach { staleId ->
+            if (!isOnCallScreen) {
+                Zap2NotificationHelper.cancelCallNotification(context, staleId)
+            }
+            notifiedIncomingCallIds.remove(staleId)
+        }
+        if (userSettings.notificationsEnabled && !isOnCallScreen) {
+            incomingCalls.forEach { call ->
+                Zap2NotificationHelper.showIncomingCallNotification(
+                    context = context,
+                    callId = call.id,
+                    callerName = call.callerName,
+                    isVideo = call.callType == "VIDEO",
+                    chatId = call.chatId
+                )
+                notifiedIncomingCallIds.add(call.id)
+            }
+        }
+    }
 
     val navItems = listOf(
         Triple(Zap2Route.ChatsRoute, stringResource(R.string.nav_chats), Pair(Icons.Rounded.ChatBubble, Icons.Outlined.ChatBubbleOutline)),
@@ -272,6 +389,7 @@ private fun Zap2AuthenticatedShell(
                                     IncomingCallBanner(
                                         call = call,
                                         onAccept = {
+                                            Zap2NotificationHelper.cancelCallNotification(context, call.id)
                                             navController.navigate(
                                                 Zap2Route.ActiveCallRoute(
                                                     callId = call.id,
@@ -281,6 +399,7 @@ private fun Zap2AuthenticatedShell(
                                             )
                                         },
                                         onDecline = {
+                                            Zap2NotificationHelper.cancelCallNotification(context, call.id)
                                             callsViewModel.declineIncomingCall(call.id)
                                         }
                                     )
