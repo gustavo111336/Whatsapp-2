@@ -15,8 +15,6 @@ import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
-import com.google.firebase.storage.FirebaseStorage
-import com.google.firebase.storage.storage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -38,7 +36,11 @@ class BackupRepository(
     private val db: FirebaseFirestore,
     private val settingsStore: SettingsDataStore,
     private val auth: FirebaseAuth = Firebase.auth,
-    private val storage: FirebaseStorage = Firebase.storage
+    private val freeStorageManager: FreeMediaStorageManager = FreeMediaStorageManager(
+        context.applicationContext,
+        db,
+        settingsStore
+    )
 ) {
     constructor(context: Context, settingsStore: SettingsDataStore) : this(
         context.applicationContext,
@@ -321,10 +323,11 @@ class BackupRepository(
         val zipFile = localResult.getOrElse { return Result.failure(it) }
 
         return try {
-            storage.maxUploadRetryTimeMillis = 120_000L
-            val storageRef = storage.reference.child("backups/$uid/zap2_latest_backup.zip")
-            storageRef.putFile(Uri.fromFile(zipFile)).await()
-            val downloadUrl = storageRef.downloadUrl.await().toString()
+            val downloadUrl = freeStorageManager.uploadBackupFile(
+                ownerId = uid,
+                file = zipFile,
+                onProgress = {}
+            )
 
             db.collection("users").document(uid).update(
                 mapOf(
@@ -340,33 +343,36 @@ class BackupRepository(
             throw e
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.UPDATE, "users/$uid")
-            val msg = if (e.message?.contains("not exist", ignoreCase = true) == true) {
-                "Backup na nuvem requer Firebase Storage (plano Blaze). Use o Backup Local (.zip) acima gratuitamente!"
-            } else {
-                "Falha no backup em nuvem: ${e.localizedMessage ?: "verifique sua conexão."}"
-            }
-            Result.failure(IllegalStateException(msg))
+            Result.failure(
+                IllegalStateException(
+                    "Falha no backup em nuvem: ${e.localizedMessage ?: "verifique sua conexão."}",
+                    e
+                )
+            )
         }
     }
 
     suspend fun downloadAndRestoreCloudBackup(password: String): Result<BackupManifest> {
         val uid = auth.currentUser?.uid
             ?: return Result.failure(IllegalStateException("Usuário não autenticado."))
-        val tempCloudZip = File(context.cacheDir, "cloud_restore_${System.currentTimeMillis()}.zip")
         return try {
-            val storageRef = storage.reference.child("backups/$uid/zap2_latest_backup.zip")
-            storageRef.getFile(tempCloudZip).await()
-            restoreBackupFromFile(tempCloudZip, password)
+            val userSnap = db.collection("users").document(uid).get().await()
+            val backupUrl = userSnap.getString("lastBackupUrl")?.takeIf { it.isNotBlank() }
+                ?: return Result.failure(IllegalStateException("Nenhum backup na nuvem foi encontrado ainda."))
+            val resolvedFile = freeStorageManager.resolveToFile(
+                url = backupUrl,
+                preferredFileName = "zap2_cloud_backup_$uid.zip"
+            ).getOrElse { return Result.failure(it) }
+            restoreBackupFromFile(resolvedFile, password)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Result.failure(
                 IllegalStateException(
-                    "Não foi possível baixar o backup na nuvem: ${e.localizedMessage ?: "nenhum backup encontrado."}"
+                    "Não foi possível baixar o backup na nuvem: ${e.localizedMessage ?: "verifique sua conexão."}",
+                    e
                 )
             )
-        } finally {
-            tempCloudZip.delete()
         }
     }
 

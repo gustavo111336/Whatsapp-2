@@ -31,6 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.CameraAlt
+import androidx.compose.material.icons.rounded.CloudDone
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.CloudUpload
 import androidx.compose.material.icons.rounded.Delete
@@ -43,6 +44,7 @@ import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.Restore
+import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material3.AlertDialog
@@ -64,6 +66,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -78,8 +81,12 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.SubcomposeAsyncImage
+import com.example.data.local.STORAGE_MODE_AUTO
+import com.example.data.local.STORAGE_MODE_FIRESTORE
+import com.example.data.local.STORAGE_MODE_GITHUB
 import com.example.data.model.BackupSummary
 import com.example.data.model.ThemeMode
+import com.example.data.remote.FreeMediaStorageManager
 import com.example.service.ZipArchiveHelper
 import com.example.ui.components.Zap2Avatar
 import com.example.ui.components.formatRelativeDateTime
@@ -127,6 +134,18 @@ fun BackupAndSettingsScreen(
 
     var showAvatarOptionsDialog by remember { mutableStateOf(false) }
     var avatarUrlInput by remember(effectivePhotoUrl) { mutableStateOf(effectivePhotoUrl.orEmpty()) }
+
+    var storageModeInput by remember(settings.storageBackendMode) { mutableStateOf(settings.storageBackendMode) }
+    var githubRepoInput by remember(settings.githubRepo) { mutableStateOf(settings.githubRepo) }
+    var githubBranchInput by remember(settings.githubBranch) { mutableStateOf(settings.githubBranch) }
+    var githubTokenInput by remember(settings.githubToken) { mutableStateOf(settings.githubToken) }
+
+    val resolvedBannerModel by produceState<Any?>(
+        initialValue = if (FreeMediaStorageManager.isChunkUri(effectiveBannerUrl)) null else effectiveBannerUrl,
+        key1 = effectiveBannerUrl
+    ) {
+        value = FreeMediaStorageManager.resolveIfChunkUri(context, effectiveBannerUrl)
+    }
 
     val bannerGalleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -279,9 +298,9 @@ fun BackupAndSettingsScreen(
                                     .clickable { showBannerOptionsDialog = true }
                                     .testTag("profile_banner_header")
                             ) {
-                                if (!effectiveBannerUrl.isNullOrBlank()) {
+                                if (resolvedBannerModel != null) {
                                     SubcomposeAsyncImage(
-                                        model = effectiveBannerUrl,
+                                        model = resolvedBannerModel,
                                         contentDescription = "Banner do perfil",
                                         contentScale = ContentScale.Crop,
                                         modifier = Modifier.fillMaxSize(),
@@ -698,6 +717,159 @@ fun BackupAndSettingsScreen(
                                 ) {
                                     Text("Restaurar padrão")
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 100% Free Cloud & GitHub Repository Storage Card
+            item {
+                Card(
+                    shape = RoundedCornerShape(26.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(Icons.Rounded.Storage, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Text(
+                                text = "Armazenamento 100% Gratuito",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        val hasGh = settings.githubRepo.contains("/") && settings.githubToken.isNotBlank()
+                        val activeSummary = when {
+                            settings.storageBackendMode != STORAGE_MODE_FIRESTORE && hasGh ->
+                                "Ativo: Repositório GitHub (${settings.githubRepo} • branch ${settings.githubBranch})"
+                            else ->
+                                "Ativo: Firestore Gratuito (Zero custo, funciona sem Firebase Storage pago)"
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    Icons.Rounded.CloudDone,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = activeSummary,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                        }
+                        Text(
+                            text = "Por padrão, fotos, vídeos, PDFs, APKs, ZIPs e MP4s são salvos em blocos gratuitos no Firestore (até 35 MB). Opcionalmente, conecte seu repositório GitHub para salvar arquivos direto nele (até 200 MB grátis via GitHub Releases).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(
+                                STORAGE_MODE_AUTO to "Automático",
+                                STORAGE_MODE_FIRESTORE to "Firestore Grátis",
+                                STORAGE_MODE_GITHUB to "GitHub Repo"
+                            ).forEach { (modeKey, label) ->
+                                FilterChip(
+                                    selected = storageModeInput == modeKey,
+                                    onClick = { storageModeInput = modeKey },
+                                    label = { Text(label) }
+                                )
+                            }
+                        }
+
+                        OutlinedTextField(
+                            value = githubRepoInput,
+                            onValueChange = { githubRepoInput = it },
+                            label = { Text("Repositório GitHub (ex: usuario/meu-repo)") },
+                            singleLine = true,
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("github_repo_input")
+                        )
+                        OutlinedTextField(
+                            value = githubBranchInput,
+                            onValueChange = { githubBranchInput = it },
+                            label = { Text("Branch (padrão: main)") },
+                            singleLine = true,
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("github_branch_input")
+                        )
+                        OutlinedTextField(
+                            value = githubTokenInput,
+                            onValueChange = { githubTokenInput = it },
+                            label = { Text("Token GitHub (permissão Contents: Read & Write)") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("github_token_input")
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.testGitHubConnection(
+                                        githubRepoInput,
+                                        githubBranchInput,
+                                        githubTokenInput
+                                    )
+                                },
+                                enabled = !isBusy && githubRepoInput.isNotBlank() && githubTokenInput.isNotBlank(),
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                                    .testTag("test_github_storage_button")
+                            ) {
+                                Text("Testar Repo")
+                            }
+                            Button(
+                                onClick = {
+                                    viewModel.saveFreeStorageConfig(
+                                        storageModeInput,
+                                        githubRepoInput,
+                                        githubBranchInput,
+                                        githubTokenInput
+                                    )
+                                },
+                                enabled = !isBusy,
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                                    .testTag("save_free_storage_button")
+                            ) {
+                                Text("Salvar Modo")
                             }
                         }
                     }

@@ -24,10 +24,6 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.snapshots
-import com.google.firebase.storage.FirebaseStorage
-import com.google.firebase.storage.StorageException
-import com.google.firebase.storage.StorageMetadata
-import com.google.firebase.storage.storage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -47,7 +43,7 @@ class UserAndContactsRepository(
     private val dao: Zap2Dao,
     private val settingsStore: SettingsDataStore? = null,
     private val auth: FirebaseAuth = Firebase.auth,
-    private val storage: FirebaseStorage = Firebase.storage
+    private val freeStorageManager: FreeMediaStorageManager? = null
 ) {
     constructor(db: FirebaseFirestore, dao: Zap2Dao) : this(
         context = null,
@@ -279,8 +275,8 @@ class UserAndContactsRepository(
                 localImageUri != null -> {
                     val ctx = context ?: return Result.failure(IllegalStateException("Contexto indisponível."))
                     val (localFile, mime) = prepareProfileMediaFile(ctx, localImageUri, "banner_$uid", isVideo = false, maxDim = 1600)
-                    uploadProfileMediaToStorage(
-                        storagePath = "users/$uid/profile/banner_${System.currentTimeMillis()}.${localFile.extension}",
+                    uploadProfileMediaFree(
+                        ownerId = uid,
                         file = localFile,
                         mimeType = mime,
                         onProgress = onProgress
@@ -327,8 +323,8 @@ class UserAndContactsRepository(
                 localMediaUri != null -> {
                     val ctx = context ?: return Result.failure(IllegalStateException("Contexto indisponível."))
                     val (localFile, mime) = prepareProfileMediaFile(ctx, localMediaUri, "avatar_$uid", isVideo = isVideo, maxDim = 720)
-                    uploadProfileMediaToStorage(
-                        storagePath = "users/$uid/profile/avatar_${System.currentTimeMillis()}.${localFile.extension}",
+                    uploadProfileMediaFree(
+                        ownerId = uid,
                         file = localFile,
                         mimeType = mime,
                         onProgress = onProgress
@@ -457,38 +453,21 @@ class UserAndContactsRepository(
         }
     }
 
-    private suspend fun uploadProfileMediaToStorage(
-        storagePath: String,
+    private suspend fun uploadProfileMediaFree(
+        ownerId: String,
         file: File,
         mimeType: String,
         onProgress: (Float) -> Unit
     ): String {
-        storage.maxUploadRetryTimeMillis = 120_000L
-        val metadata = StorageMetadata.Builder()
-            .setContentType(mimeType)
-            .build()
-        val task = storage.reference.child(storagePath).putFile(Uri.fromFile(file), metadata)
-        task.addOnProgressListener { snap ->
-            val total = snap.totalByteCount
-            if (total > 0L) {
-                onProgress((snap.bytesTransferred.toFloat() / total.toFloat()).coerceIn(0f, 1f))
-            }
-        }
-        return try {
-            task.await()
-            task.snapshot.storage.downloadUrl.await().toString()
-        } catch (e: StorageException) {
-            val friendly = when (e.errorCode) {
-                StorageException.ERROR_BUCKET_NOT_FOUND,
-                StorageException.ERROR_OBJECT_NOT_FOUND ->
-                    "Firebase Storage não está ativo neste projeto. Ative o Storage no Console Firebase ou cole uma URL direta (https://...)."
-                StorageException.ERROR_NOT_AUTHORIZED,
-                StorageException.ERROR_NOT_AUTHENTICATED ->
-                    "Sem permissão para enviar ao Firebase Storage. Verifique as regras do Storage."
-                else -> "Falha no upload para o Storage: ${e.localizedMessage ?: "tente novamente."}"
-            }
-            throw IllegalStateException(friendly, e)
-        }
+        val ctx = context ?: throw IllegalStateException("Contexto indisponível.")
+        val manager = freeStorageManager
+            ?: FreeMediaStorageManager(ctx, db, settingsStore ?: SettingsDataStore(ctx))
+        return manager.uploadPublicProfileMedia(
+            ownerId = ownerId,
+            file = file,
+            mimeType = mimeType,
+            onProgress = onProgress
+        )
     }
 
     private suspend fun upsertPhoneLookup(

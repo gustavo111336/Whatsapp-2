@@ -30,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -37,13 +38,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.SubcomposeAsyncImage
+import com.example.data.remote.FreeMediaStorageManager
 import com.example.ui.theme.Zap2ExpressiveShapes
 import com.example.ui.theme.ZapOnlineGreen
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -52,6 +56,8 @@ fun isVideoMediaUrl(url: String?): Boolean {
     if (url.isNullOrBlank()) return false
     val lower = url.lowercase()
     if (lower.startsWith("data:video/")) return true
+    val extParam = runCatching { Uri.parse(lower).getQueryParameter("ext") }.getOrNull()
+    if (extParam in setOf("mp4", "webm", "m4v", "mov")) return true
     val cleanPath = runCatching { Uri.parse(lower).path ?: lower }.getOrDefault(lower)
     return cleanPath.endsWith(".mp4") ||
         cleanPath.endsWith(".webm") ||
@@ -72,6 +78,7 @@ fun Zap2Avatar(
     size: Dp = 52.dp,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val initials = remember(name) {
         name.trim()
             .split(Regex("\\s+"))
@@ -81,7 +88,21 @@ fun Zap2Avatar(
             .ifEmpty { "Z2" }
     }
 
-    var videoPlaybackFailed by remember(photoUrl) { mutableStateOf(false) }
+    val cleanUrl = photoUrl?.trim().orEmpty()
+    val resolvedModel by produceState<Any?>(
+        initialValue = if (FreeMediaStorageManager.isChunkUri(cleanUrl)) null else cleanUrl.takeIf { it.isNotEmpty() },
+        key1 = cleanUrl
+    ) {
+        value = if (cleanUrl.isEmpty()) {
+            null
+        } else if (FreeMediaStorageManager.isChunkUri(cleanUrl)) {
+            FreeMediaStorageManager.resolveIfChunkUri(context, cleanUrl)
+        } else {
+            cleanUrl
+        }
+    }
+
+    var videoPlaybackFailed by remember(cleanUrl) { mutableStateOf(false) }
 
     Box(modifier = modifier.size(size)) {
         Box(
@@ -94,11 +115,16 @@ fun Zap2Avatar(
                 ),
             contentAlignment = Alignment.Center
         ) {
-            val cleanUrl = photoUrl?.trim().orEmpty()
+            val activeModel = resolvedModel
+            val videoSourceString = when (activeModel) {
+                is File -> Uri.fromFile(activeModel).toString()
+                is String -> activeModel
+                else -> ""
+            }
             when {
-                cleanUrl.isNotEmpty() && isVideoMediaUrl(cleanUrl) && !videoPlaybackFailed -> {
+                cleanUrl.isNotEmpty() && isVideoMediaUrl(cleanUrl) && videoSourceString.isNotEmpty() && !videoPlaybackFailed -> {
                     LoopingMutedVideoAvatar(
-                        videoUrl = cleanUrl,
+                        videoUrl = videoSourceString,
                         onError = { videoPlaybackFailed = true },
                         fallbackContent = {
                             AvatarFallbackVisual(
@@ -111,9 +137,9 @@ fun Zap2Avatar(
                         modifier = Modifier.fillMaxSize()
                     )
                 }
-                cleanUrl.isNotEmpty() -> {
+                activeModel != null -> {
                     SubcomposeAsyncImage(
-                        model = cleanUrl,
+                        model = activeModel,
                         contentDescription = "Avatar de $name",
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop,

@@ -17,6 +17,7 @@ import com.example.data.remote.AuthRepository
 import com.example.data.remote.BackupRepository
 import com.example.data.remote.CallSignalingRepository
 import com.example.data.remote.ChatRepository
+import com.example.data.remote.FreeMediaStorageManager
 import com.example.data.remote.UserAndContactsRepository
 import com.example.data.remote.WebRtcCallManager
 import com.example.service.AudioRecorderPlayer
@@ -35,18 +36,22 @@ class AppContainer(context: Context) {
     val settingsStore: SettingsDataStore = SettingsDataStore(appContext)
     val authRepository: AuthRepository = AuthRepository()
 
+    val freeStorageManager: FreeMediaStorageManager by lazy {
+        FreeMediaStorageManager(appContext, firestore, settingsStore)
+    }
+
     val localDao get() = Zap2Database.getInstance(appContext).zap2Dao()
 
     val userRepository: UserAndContactsRepository by lazy {
-        UserAndContactsRepository(appContext, firestore, localDao, settingsStore)
+        UserAndContactsRepository(appContext, firestore, localDao, settingsStore, freeStorageManager = freeStorageManager)
     }
 
     val chatRepository: ChatRepository by lazy {
-        ChatRepository(appContext, firestore, localDao)
+        ChatRepository(appContext, firestore, localDao, settingsStore = settingsStore, freeStorageManager = freeStorageManager)
     }
 
     val backupRepository: BackupRepository by lazy {
-        BackupRepository(appContext, firestore, settingsStore)
+        BackupRepository(appContext, firestore, settingsStore, freeStorageManager = freeStorageManager)
     }
 
     val callSignalingRepository: CallSignalingRepository = CallSignalingRepository(firestore)

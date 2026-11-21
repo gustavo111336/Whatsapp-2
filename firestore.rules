@@ -160,6 +160,36 @@ service cloud.firestore {
              isValidTimestamp(data.createdAt);
     }
 
+    function isValidChatFileChunk(data) {
+      return data.chatId is string && data.chatId.size() >= 1 && data.chatId.size() <= 128 &&
+             data.fileId is string && data.fileId.size() >= 1 && data.fileId.size() <= 80 &&
+             data.chunkIndex is int && data.chunkIndex >= 0 && data.chunkIndex < 120 &&
+             data.totalChunks is int && data.totalChunks >= 1 && data.totalChunks <= 120 &&
+             data.senderId is string && data.senderId.size() >= 1 && data.senderId.size() <= 128 &&
+             isValidStringList(data.participantUids, 1, 50) &&
+             data.data is string && data.data.size() >= 1 && data.data.size() <= 750000 &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidPublicMediaChunk(data) {
+      return data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+             data.mediaId is string && data.mediaId.size() >= 1 && data.mediaId.size() <= 80 &&
+             data.chunkIndex is int && data.chunkIndex >= 0 && data.chunkIndex < 60 &&
+             data.totalChunks is int && data.totalChunks >= 1 && data.totalChunks <= 60 &&
+             data.mimeType is string && data.mimeType.size() >= 1 && data.mimeType.size() <= 128 &&
+             data.data is string && data.data.size() >= 1 && data.data.size() <= 750000 &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidBackupChunk(data) {
+      return data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+             data.backupId is string && data.backupId.size() >= 1 && data.backupId.size() <= 80 &&
+             data.chunkIndex is int && data.chunkIndex >= 0 && data.chunkIndex < 120 &&
+             data.totalChunks is int && data.totalChunks >= 1 && data.totalChunks <= 120 &&
+             data.data is string && data.data.size() >= 1 && data.data.size() <= 750000 &&
+             isValidTimestamp(data.createdAt);
+    }
+
     // --- Collection Rules ---
 
     // 1. Private User Document (PII strictly owner-only)
@@ -207,6 +237,33 @@ service cloud.firestore {
                          ]);
         allow delete: if isOwner(userId) && isValidId(contactId);
       }
+
+      // Free Cloud Backup Chunks (owner-only)
+      match /backup_chunks/{chunkId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(chunkId) &&
+                         incoming().ownerId == userId &&
+                         incoming().keys().hasAll(['ownerId', 'backupId', 'chunkIndex', 'totalChunks', 'data', 'createdAt']) &&
+                         incoming().keys().hasOnly(['ownerId', 'backupId', 'chunkIndex', 'totalChunks', 'data', 'createdAt']) &&
+                         isValidBackupChunk(incoming());
+        allow update: if false;
+        allow delete: if isOwner(userId) && isValidId(chunkId);
+      }
+    }
+
+    // 2b. Public Profile Media Chunks (deterministic ID get only, no list scraping)
+    match /public_media_chunks/{chunkId} {
+      allow get: if isSignedIn() && isValidId(chunkId);
+      allow list: if false;
+      allow create: if isSignedIn() &&
+                       isValidId(chunkId) &&
+                       incoming().ownerId == request.auth.uid &&
+                       incoming().keys().hasAll(['ownerId', 'mediaId', 'chunkIndex', 'totalChunks', 'mimeType', 'data', 'createdAt']) &&
+                       incoming().keys().hasOnly(['ownerId', 'mediaId', 'chunkIndex', 'totalChunks', 'mimeType', 'data', 'createdAt']) &&
+                       isValidPublicMediaChunk(incoming());
+      allow update: if false;
+      allow delete: if isSignedIn() && isValidId(chunkId) && existing().ownerId == request.auth.uid;
     }
 
     // 2. Public Non-PII Presence Profile (exact UID get only, no list scraping)
@@ -354,6 +411,25 @@ service cloud.firestore {
                                  exists(/databases/$(database)/documents/chats/$(chatId)) &&
                                  (request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantUids);
         allow delete: if isOwner(typingUid) && isValidId(chatId) && isValidId(typingUid);
+      }
+
+      // Free Chunked File Storage Subcollection (participant-scoped)
+      match /file_chunks/{chunkId} {
+        allow get: if isSignedIn() && isValidId(chatId) && isValidId(chunkId) && (resource == null || (request.auth.uid in existing().participantUids));
+        allow list: if isSignedIn() && isValidId(chatId) && (request.auth.uid in resource.data.participantUids);
+        allow create: if isSignedIn() &&
+                         isValidId(chatId) &&
+                         isValidId(chunkId) &&
+                         incoming().chatId == chatId &&
+                         incoming().senderId == request.auth.uid &&
+                         (request.auth.uid in incoming().participantUids) &&
+                         incoming().keys().hasAll(['chatId', 'fileId', 'chunkIndex', 'totalChunks', 'senderId', 'participantUids', 'data', 'createdAt']) &&
+                         incoming().keys().hasOnly(['chatId', 'fileId', 'chunkIndex', 'totalChunks', 'senderId', 'participantUids', 'data', 'createdAt']) &&
+                         isValidChatFileChunk(incoming()) &&
+                         exists(/databases/$(database)/documents/chats/$(chatId)) &&
+                         (request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantUids);
+        allow update: if false;
+        allow delete: if isSignedIn() && isValidId(chatId) && isValidId(chunkId) && existing().senderId == request.auth.uid;
       }
     }
 

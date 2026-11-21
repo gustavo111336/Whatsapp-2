@@ -81,6 +81,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -105,6 +106,7 @@ import com.example.R
 import com.example.data.model.ChatMessage
 import com.example.data.model.UiState
 import com.example.data.model.ZipExtractionResult
+import com.example.data.remote.FreeMediaStorageManager
 import com.example.service.ZipArchiveHelper
 import com.example.ui.components.TypingDotsAnimated
 import com.example.ui.components.Zap2Avatar
@@ -580,9 +582,18 @@ fun ChatDetailScreen(
                                     audioProgress = if (playingMessageId == msg.id) playbackProgress else 0f,
                                     downloadProgress = fileDownloadProgress[msg.id],
                                     onToggleAudio = {
-                                        val source = msg.localMediaPath?.takeIf { File(it).exists() } ?: msg.mediaUrl
-                                        if (!source.isNullOrBlank()) {
-                                            viewModel.audioPlayer.togglePlayback(msg.id, source)
+                                        val localPath = msg.localMediaPath?.takeIf { File(it).exists() }
+                                        val remoteUrl = msg.mediaUrl
+                                        if (localPath != null) {
+                                            viewModel.audioPlayer.togglePlayback(msg.id, localPath)
+                                        } else if (!remoteUrl.isNullOrBlank()) {
+                                            if (FreeMediaStorageManager.isChunkUri(remoteUrl) || remoteUrl.contains("github")) {
+                                                viewModel.downloadAndPrepareFile(msg) { downloaded ->
+                                                    viewModel.audioPlayer.togglePlayback(msg.id, downloaded.absolutePath)
+                                                }
+                                            } else {
+                                                viewModel.audioPlayer.togglePlayback(msg.id, remoteUrl)
+                                            }
                                         }
                                     },
                                     onPlayVideo = { file -> activeVideoFile = file },
@@ -1161,15 +1172,25 @@ private fun MessageBubbleRow(
 
                 when (message.messageType) {
                     "IMAGE" -> {
-                        val model: Any? = remember(message.id, message.localMediaPath, message.mediaUrl) {
-                            val localFile = message.localMediaPath?.takeIf { File(it).exists() }
-                            when {
+                        val context = LocalContext.current
+                        val model by produceState<Any?>(
+                            initialValue = null,
+                            key1 = message.id,
+                            key2 = message.localMediaPath,
+                            key3 = message.mediaUrl
+                        ) {
+                            val localFile = message.localMediaPath?.let(::File)?.takeIf { it.exists() }
+                            val remoteUrl = message.mediaUrl
+                            value = when {
                                 localFile != null -> localFile
-                                message.mediaUrl?.startsWith("data:image/") == true -> {
-                                    val b64 = message.mediaUrl.substringAfter(",", "")
+                                remoteUrl?.startsWith("data:image/") == true -> {
+                                    val b64 = remoteUrl.substringAfter(",", "")
                                     runCatching { Base64.decode(b64, Base64.DEFAULT) }.getOrNull()
                                 }
-                                else -> message.mediaUrl
+                                FreeMediaStorageManager.isChunkUri(remoteUrl) -> {
+                                    FreeMediaStorageManager.resolveIfChunkUri(context, remoteUrl)
+                                }
+                                else -> remoteUrl
                             }
                         }
                         if (model != null) {

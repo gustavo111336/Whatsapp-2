@@ -178,6 +178,7 @@ private fun Zap2AuthenticatedShell(
                     userRepository = container.userRepository,
                     backupRepository = container.backupRepository,
                     settingsStore = container.settingsStore,
+                    freeStorageManager = container.freeStorageManager,
                     currentUserId = currentUserId
                 )
             }

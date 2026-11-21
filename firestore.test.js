@@ -525,3 +525,89 @@ test("WebRTC call signaling lifecycle and terminal state locking", async () => {
     })
   );
 });
+
+test("Free chunked storage rules enforce participant isolation, public non-scraping, and owner backups", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+  const charlieDb = testEnv.authenticatedContext(CHARLIE_UID).firestore();
+  const past = new Date(Date.now() - 2000);
+
+  // Create chat between Alice and Bob
+  await assertSucceeds(
+    aliceDb.collection("chats").doc("chat_free").set({
+      chatType: "DIRECT",
+      title: "Bob",
+      createdBy: ALICE_UID,
+      participantUids: [ALICE_UID, BOB_UID],
+      adminUids: [ALICE_UID, BOB_UID],
+      lastMessageText: "Oi",
+      lastMessageType: "TEXT",
+      lastMessageSenderId: ALICE_UID,
+      lastMessageAt: past,
+      createdAt: past,
+      updatedAt: past,
+    })
+  );
+
+  // Alice uploads chunk 0 of a file to chat_free
+  await assertSucceeds(
+    aliceDb.collection("chats").doc("chat_free").collection("file_chunks").doc("file1_0").set({
+      chatId: "chat_free",
+      fileId: "file1",
+      chunkIndex: 0,
+      totalChunks: 2,
+      senderId: ALICE_UID,
+      participantUids: [ALICE_UID, BOB_UID],
+      data: "SGVsbG8=",
+      createdAt: past,
+    })
+  );
+
+  // Participant Bob can read chunk; non-participant Charlie is denied
+  await assertSucceeds(bobDb.collection("chats").doc("chat_free").collection("file_chunks").doc("file1_0").get());
+  await assertFails(charlieDb.collection("chats").doc("chat_free").collection("file_chunks").doc("file1_0").get());
+
+  // Charlie cannot upload into chat_free
+  await assertFails(
+    charlieDb.collection("chats").doc("chat_free").collection("file_chunks").doc("bad_0").set({
+      chatId: "chat_free",
+      fileId: "bad",
+      chunkIndex: 0,
+      totalChunks: 1,
+      senderId: CHARLIE_UID,
+      participantUids: [ALICE_UID, BOB_UID, CHARLIE_UID],
+      data: "AAAA",
+      createdAt: past,
+    })
+  );
+
+  // Public profile media chunks: Alice uploads, Bob can exact-get, nobody can list-scrape
+  await assertSucceeds(
+    aliceDb.collection("public_media_chunks").doc("av1_0").set({
+      ownerId: ALICE_UID,
+      mediaId: "av1",
+      chunkIndex: 0,
+      totalChunks: 1,
+      mimeType: "video/mp4",
+      data: "AAAA",
+      createdAt: past,
+    })
+  );
+  await assertSucceeds(bobDb.collection("public_media_chunks").doc("av1_0").get());
+  await assertFails(bobDb.collection("public_media_chunks").get());
+  await assertFails(bobDb.collection("public_media_chunks").doc("av1_0").delete());
+
+  // User backup chunks: strictly owner-only
+  await assertSucceeds(
+    aliceDb.collection("users").doc(ALICE_UID).collection("backup_chunks").doc("bk1_0").set({
+      ownerId: ALICE_UID,
+      backupId: "bk1",
+      chunkIndex: 0,
+      totalChunks: 1,
+      data: "UEsDBAo=",
+      createdAt: past,
+    })
+  );
+  await assertFails(bobDb.collection("users").doc(ALICE_UID).collection("backup_chunks").doc("bk1_0").get());
+  await assertSucceeds(aliceDb.collection("users").doc(ALICE_UID).collection("backup_chunks").doc("bk1_0").get());
+});

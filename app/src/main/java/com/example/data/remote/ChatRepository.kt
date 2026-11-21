@@ -12,6 +12,7 @@ import android.webkit.MimeTypeMap
 import com.example.R
 import com.example.data.local.LocalChatEntity
 import com.example.data.local.LocalMessageEntity
+import com.example.data.local.SettingsDataStore
 import com.example.data.local.Zap2Dao
 import com.example.data.model.ChatMessage
 import com.example.data.model.ChatRoom
@@ -26,10 +27,6 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.snapshots
-import com.google.firebase.storage.FirebaseStorage
-import com.google.firebase.storage.StorageException
-import com.google.firebase.storage.StorageMetadata
-import com.google.firebase.storage.storage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -46,8 +43,6 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.UUID
 
 class ChatRepository(
@@ -55,7 +50,12 @@ class ChatRepository(
     private val db: FirebaseFirestore,
     private val dao: Zap2Dao,
     private val auth: FirebaseAuth = Firebase.auth,
-    private val storage: FirebaseStorage = Firebase.storage
+    private val settingsStore: SettingsDataStore = SettingsDataStore(context.applicationContext),
+    private val freeStorageManager: FreeMediaStorageManager = FreeMediaStorageManager(
+        context.applicationContext,
+        db,
+        settingsStore
+    )
 ) {
     constructor(context: Context, dao: Zap2Dao) : this(
         context.applicationContext,
@@ -666,9 +666,9 @@ class ChatRepository(
             }
 
             val fileSize = localFile.length()
-            val storagePath = "chats/${chat.id}/media/${localFile.name}"
-            val mediaUrl = uploadFileToStorage(
-                storagePath = storagePath,
+            val mediaUrl = uploadFileFree(
+                chat = chat,
+                senderId = uid,
                 file = localFile,
                 displayName = originalName,
                 mimeType = finalMime
@@ -738,8 +738,9 @@ class ChatRepository(
             }
 
             val fileSize = savedLocal.length()
-            val mediaUrl = uploadFileToStorage(
-                storagePath = "chats/${chat.id}/media/${savedLocal.name}",
+            val mediaUrl = uploadFileFree(
+                chat = chat,
+                senderId = uid,
                 file = savedLocal,
                 displayName = "Áudio de voz.m4a",
                 mimeType = "audio/mp4"
@@ -815,8 +816,9 @@ class ChatRepository(
             }
 
             val fileSize = localFile.length()
-            val mediaUrl = uploadFileToStorage(
-                storagePath = "chats/${chat.id}/media/${localFile.name}",
+            val mediaUrl = uploadFileFree(
+                chat = chat,
+                senderId = uid,
                 file = localFile,
                 displayName = originalName,
                 mimeType = mimeType
@@ -907,8 +909,9 @@ class ChatRepository(
                 return Result.failure(IllegalArgumentException("O arquivo selecionado está vazio."))
             }
 
-            val mediaUrl = uploadFileToStorage(
-                storagePath = "chats/${chat.id}/files/${localFile.name}",
+            val mediaUrl = uploadFileFree(
+                chat = chat,
+                senderId = uid,
                 file = localFile,
                 displayName = originalName,
                 mimeType = detectedMime
@@ -991,82 +994,28 @@ class ChatRepository(
             val url = message.mediaUrl?.takeIf { it.isNotBlank() }
                 ?: return@withContext Result.failure(IllegalStateException("URL do arquivo indisponível."))
 
-            if (url.startsWith("data:")) {
-                val b64 = url.substringAfter(",", "")
-                val bytes = Base64.decode(b64, Base64.DEFAULT)
-                cachedDest.writeBytes(bytes)
-                onProgress(1f)
-                return@withContext Result.success(cachedDest)
-            }
+            val resolved = freeStorageManager.resolveToFile(
+                url = url,
+                preferredFileName = preferredName,
+                expectedSizeBytes = message.fileSizeBytes,
+                onProgress = onProgress
+            ).getOrElse { return@withContext Result.failure(it) }
 
-            val tempDest = File(downloadsDir, "${message.id}_${preferredName}.part")
-            try {
-                if (url.contains("firebasestorage.googleapis.com") || url.startsWith("gs://")) {
-                    val task = storage.getReferenceFromUrl(url).getFile(tempDest)
-                    task.addOnProgressListener { snap ->
-                        val total = snap.totalByteCount
-                        if (total > 0L) {
-                            onProgress((snap.bytesTransferred.toFloat() / total.toFloat()).coerceIn(0f, 1f))
-                        }
-                    }
-                    task.await()
-                } else {
-                    val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                        connectTimeout = 15_000
-                        readTimeout = 30_000
-                        instanceFollowRedirects = true
-                    }
-                    try {
-                        val code = conn.responseCode
-                        if (code !in 200..299) {
-                            throw IllegalStateException("Erro ao baixar arquivo (HTTP $code).")
-                        }
-                        val total = conn.contentLengthLong.coerceAtLeast(message.fileSizeBytes ?: 0L)
-                        var copied = 0L
-                        conn.inputStream.use { input ->
-                            tempDest.outputStream().use { output ->
-                                val buf = ByteArray(8192)
-                                var read: Int
-                                while (input.read(buf).also { read = it } != -1) {
-                                    output.write(buf, 0, read)
-                                    copied += read
-                                    if (total > 0L) {
-                                        onProgress((copied.toFloat() / total.toFloat()).coerceIn(0f, 1f))
-                                    }
-                                }
-                            }
-                        }
-                    } finally {
-                        conn.disconnect()
-                    }
-                }
-                if (cachedDest.exists()) cachedDest.delete()
-                if (!tempDest.renameTo(cachedDest)) {
-                    tempDest.copyTo(cachedDest, overwrite = true)
-                    tempDest.delete()
-                }
-                onProgress(1f)
-                Result.success(cachedDest)
-            } catch (e: Exception) {
-                tempDest.delete()
-                throw e
+            if (resolved.absolutePath != cachedDest.absolutePath) {
+                resolved.copyTo(cachedDest, overwrite = true)
             }
+            onProgress(1f)
+            Result.success(cachedDest)
         } catch (e: CancellationException) {
             throw e
-        } catch (e: StorageException) {
-            val msg = when (e.errorCode) {
-                StorageException.ERROR_OBJECT_NOT_FOUND -> "Arquivo não encontrado no Firebase Storage."
-                StorageException.ERROR_NOT_AUTHORIZED -> "Sem permissão para baixar este arquivo."
-                else -> "Falha ao baixar arquivo: ${e.localizedMessage ?: "verifique sua conexão."}"
-            }
-            Result.failure(IllegalStateException(msg, e))
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
-    private suspend fun uploadFileToStorage(
-        storagePath: String,
+    private suspend fun uploadFileFree(
+        chat: ChatRoom,
+        senderId: String,
         file: File,
         displayName: String,
         mimeType: String
@@ -1079,42 +1028,20 @@ class ChatRepository(
             progress = 0f
         )
 
-        storage.maxUploadRetryTimeMillis = 120_000L
-        val ref = storage.reference.child(storagePath)
-        val metadata = StorageMetadata.Builder()
-            .setContentType(mimeType.ifBlank { "application/octet-stream" })
-            .build()
-
-        val task = ref.putFile(Uri.fromFile(file), metadata)
-        task.addOnProgressListener { snap ->
-            val total = snap.totalByteCount.takeIf { it > 0L } ?: totalSize
-            val transferred = snap.bytesTransferred.coerceAtLeast(0L)
+        return freeStorageManager.uploadChatFile(
+            chatId = chat.id,
+            senderId = senderId,
+            participantUids = chat.participantUids,
+            file = file,
+            displayName = displayName,
+            mimeType = mimeType
+        ) { transferred, total ->
             _uploadProgress.value = UploadProgressState(
                 fileName = displayName,
                 bytesTransferred = transferred,
-                totalBytes = total,
-                progress = (transferred.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+                totalBytes = total.coerceAtLeast(1L),
+                progress = (transferred.toFloat() / total.coerceAtLeast(1L).toFloat()).coerceIn(0f, 1f)
             )
-        }
-
-        return try {
-            task.await()
-            ref.downloadUrl.await().toString()
-        } catch (e: StorageException) {
-            Log.w(TAG, "Firebase Storage upload error (${e.errorCode}): ${e.message}")
-            val friendly = when (e.errorCode) {
-                StorageException.ERROR_BUCKET_NOT_FOUND,
-                StorageException.ERROR_OBJECT_NOT_FOUND ->
-                    "Firebase Storage não encontrado/ativado neste projeto. Ative o Storage no Console do Firebase para enviar arquivos grandes."
-                StorageException.ERROR_NOT_AUTHORIZED,
-                StorageException.ERROR_NOT_AUTHENTICATED ->
-                    "Sem permissão no Firebase Storage para enviar este arquivo. Verifique as regras do Storage."
-                StorageException.ERROR_RETRY_LIMIT_EXCEEDED ->
-                    "Tempo limite excedido ao enviar $displayName. Verifique sua conexão e tente novamente."
-                else ->
-                    "Falha ao enviar $displayName: ${e.localizedMessage ?: "erro no Firebase Storage."}"
-            }
-            throw IllegalStateException(friendly, e)
         }
     }
 
@@ -1231,11 +1158,7 @@ class ChatRepository(
             message.localMediaPath?.let { path ->
                 runCatching { File(path).delete() }
             }
-            message.mediaUrl?.takeIf {
-                it.contains("firebasestorage.googleapis.com") || it.startsWith("gs://")
-            }?.let { remoteUrl ->
-                runCatching { storage.getReferenceFromUrl(remoteUrl).delete().await() }
-            }
+            freeStorageManager.deleteChatChunksIfNeeded(chat.id, message.mediaUrl)
 
             // Update chat preview cleanly to the previous message (or blank), leaving zero trace
             val fallback = remainingMessagesAfterDelete.lastOrNull()

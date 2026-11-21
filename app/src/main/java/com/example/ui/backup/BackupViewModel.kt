@@ -12,6 +12,7 @@ import com.example.data.model.ThemeMode
 import com.example.data.model.UserProfile
 import com.example.data.remote.AuthRepository
 import com.example.data.remote.BackupRepository
+import com.example.data.remote.FreeMediaStorageManager
 import com.example.data.remote.PhoneVerificationEvent
 import com.example.data.remote.UserAndContactsRepository
 import com.example.data.remote.unwrapFirestoreException
@@ -31,6 +32,7 @@ class BackupViewModel(
     private val userRepository: UserAndContactsRepository,
     private val backupRepository: BackupRepository,
     private val settingsStore: SettingsDataStore,
+    private val freeStorageManager: FreeMediaStorageManager,
     val currentUserId: String
 ) : ViewModel() {
 
@@ -317,7 +319,7 @@ class BackupViewModel(
             backupRepository.uploadCloudBackup(password)
                 .onSuccess {
                     refreshLocalBackups()
-                    _statusMessage.value = "Backup criptografado enviado para a nuvem (Firebase Storage)!"
+                    _statusMessage.value = "Backup criptografado enviado para a nuvem gratuita!"
                 }
                 .onFailure { err ->
                     _statusMessage.value = err.localizedMessage ?: "Erro no upload para nuvem."
@@ -335,6 +337,34 @@ class BackupViewModel(
                 }
                 .onFailure { err ->
                     _statusMessage.value = err.localizedMessage ?: "Erro ao baixar backup da nuvem."
+                }
+            _isBusy.value = false
+        }
+    }
+
+    fun saveFreeStorageConfig(
+        mode: String,
+        githubRepo: String,
+        githubBranch: String,
+        githubToken: String
+    ) {
+        viewModelScope.launch {
+            settingsStore.saveFreeStorageConfig(mode, githubRepo, githubBranch, githubToken)
+            _statusMessage.value = if (githubRepo.isNotBlank() && githubToken.isNotBlank()) {
+                "Configuração de armazenamento gratuito salva (Repositório GitHub pronto)!"
+            } else {
+                "Configuração salva: usando Firestore Gratuito (sem custo)."
+            }
+        }
+    }
+
+    fun testGitHubConnection(repo: String, branch: String, token: String) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            freeStorageManager.testGitHubConfig(repo, branch, token)
+                .onSuccess { msg -> _statusMessage.value = msg }
+                .onFailure { err ->
+                    _statusMessage.value = err.localizedMessage ?: "Falha ao testar repositório GitHub."
                 }
             _isBusy.value = false
         }

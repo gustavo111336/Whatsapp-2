@@ -58,7 +58,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
+import com.example.Zap2Application
 import com.example.data.model.ChatMessage
+import com.example.data.remote.FreeMediaStorageManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -345,7 +347,7 @@ fun VideoPlayerDialog(
     }
 }
 
-private fun resolveVideoFile(context: Context, message: ChatMessage): File? {
+private suspend fun resolveVideoFile(context: Context, message: ChatMessage): File? {
     val local = message.localMediaPath?.let(::File)?.takeIf { it.exists() && it.length() > 0L }
     if (local != null) return local
     val url = message.mediaUrl ?: return null
@@ -360,43 +362,13 @@ private fun resolveVideoFile(context: Context, message: ChatMessage): File? {
             cached
         }.getOrNull()
     }
-    if (url.startsWith("http://") || url.startsWith("https://")) {
-        val cached = File(context.cacheDir, "play_vid_${message.id}.mp4")
-        if (cached.exists() && cached.length() > 0L) {
-            return cached
-        }
-        return runCatching {
-            val tmp = File(context.cacheDir, "play_vid_${message.id}.part")
-            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 10_000
-                readTimeout = 25_000
-                instanceFollowRedirects = true
-            }
-            try {
-                if (conn.responseCode in 200..299) {
-                    conn.inputStream.use { input ->
-                        tmp.outputStream().use { output ->
-                            val buf = ByteArray(8192)
-                            var read: Int
-                            while (input.read(buf).also { read = it } != -1) {
-                                output.write(buf, 0, read)
-                            }
-                        }
-                    }
-                    if (cached.exists()) cached.delete()
-                    if (!tmp.renameTo(cached)) {
-                        tmp.copyTo(cached, overwrite = true)
-                        tmp.delete()
-                    }
-                    cached
-                } else {
-                    tmp.delete()
-                    null
-                }
-            } finally {
-                conn.disconnect()
-            }
-        }.getOrNull()
+    val manager = (context.applicationContext as? Zap2Application)?.container?.freeStorageManager
+    if (manager != null && (FreeMediaStorageManager.isChunkUri(url) || url.startsWith("http://") || url.startsWith("https://"))) {
+        return manager.resolveToFile(
+            url = url,
+            preferredFileName = message.fileName ?: "play_vid_${message.id}.mp4",
+            expectedSizeBytes = message.fileSizeBytes
+        ).getOrNull()
     }
     return null
 }
