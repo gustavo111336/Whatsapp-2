@@ -229,6 +229,7 @@ fun VideoMessageBubbleContent(
     }
 
     val seconds = ((message.mediaDurationMs ?: 0L) / 1000L).coerceAtLeast(1L)
+    val isFetchingRemote = resolvedVideoFile == null && !message.mediaUrl.isNullOrBlank()
 
     Box(
         modifier = Modifier
@@ -257,12 +258,20 @@ fun VideoMessageBubbleContent(
                 .size(54.dp)
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = Icons.Rounded.PlayCircle,
-                    contentDescription = "Reproduzir vídeo",
-                    tint = Color.White,
-                    modifier = Modifier.size(44.dp)
-                )
+                if (isFetchingRemote) {
+                    androidx.compose.material3.CircularProgressIndicator(
+                        color = Color.White,
+                        strokeWidth = 3.dp,
+                        modifier = Modifier.size(28.dp)
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Rounded.PlayCircle,
+                        contentDescription = "Reproduzir vídeo",
+                        tint = Color.White,
+                        modifier = Modifier.size(44.dp)
+                    )
+                }
             }
         }
         Surface(
@@ -349,6 +358,44 @@ private fun resolveVideoFile(context: Context, message: ChatMessage): File? {
                 cached.writeBytes(bytes)
             }
             cached
+        }.getOrNull()
+    }
+    if (url.startsWith("http://") || url.startsWith("https://")) {
+        val cached = File(context.cacheDir, "play_vid_${message.id}.mp4")
+        if (cached.exists() && cached.length() > 0L) {
+            return cached
+        }
+        return runCatching {
+            val tmp = File(context.cacheDir, "play_vid_${message.id}.part")
+            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 10_000
+                readTimeout = 25_000
+                instanceFollowRedirects = true
+            }
+            try {
+                if (conn.responseCode in 200..299) {
+                    conn.inputStream.use { input ->
+                        tmp.outputStream().use { output ->
+                            val buf = ByteArray(8192)
+                            var read: Int
+                            while (input.read(buf).also { read = it } != -1) {
+                                output.write(buf, 0, read)
+                            }
+                        }
+                    }
+                    if (cached.exists()) cached.delete()
+                    if (!tmp.renameTo(cached)) {
+                        tmp.copyTo(cached, overwrite = true)
+                        tmp.delete()
+                    }
+                    cached
+                } else {
+                    tmp.delete()
+                    null
+                }
+            } finally {
+                conn.disconnect()
+            }
         }.getOrNull()
     }
     return null

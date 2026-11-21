@@ -1,34 +1,50 @@
 package com.example.ui.backup
 
 import android.app.Activity
+import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.Archive
+import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.CloudUpload
+import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.FolderZip
+import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PhoneAndroid
+import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.Verified
+import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -52,14 +68,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.compose.SubcomposeAsyncImage
 import com.example.data.model.BackupSummary
 import com.example.data.model.ThemeMode
+import com.example.service.ZipArchiveHelper
 import com.example.ui.components.Zap2Avatar
 import com.example.ui.components.formatRelativeDateTime
 import java.util.Date
@@ -78,9 +99,21 @@ fun BackupAndSettingsScreen(
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
     val pendingExportFile by viewModel.pendingExportFile.collectAsStateWithLifecycle()
     val verificationId by viewModel.verificationId.collectAsStateWithLifecycle()
+    val mediaUploadProgress by viewModel.mediaUploadProgress.collectAsStateWithLifecycle()
 
-    var displayName by remember(myProfile?.displayName) { mutableStateOf(myProfile?.displayName ?: "") }
-    var about by remember(myProfile?.about) { mutableStateOf(myProfile?.about ?: "") }
+    val effectiveBannerUrl = myProfile?.bannerUrl?.takeIf { it.isNotBlank() }
+        ?: settings.cachedBannerUrl.takeIf { it.isNotBlank() }
+    val effectivePhotoUrl = myProfile?.photoUrl?.takeIf { it.isNotBlank() }
+        ?: settings.cachedPhotoUrl.takeIf { it.isNotBlank() }
+    val effectiveName = myProfile?.displayName?.takeIf { it.isNotBlank() }
+        ?: settings.cachedDisplayName.ifBlank { "Zap2" }
+
+    var displayName by remember(myProfile?.displayName, settings.cachedDisplayName) {
+        mutableStateOf(myProfile?.displayName ?: settings.cachedDisplayName)
+    }
+    var about by remember(myProfile?.about, settings.cachedAbout) {
+        mutableStateOf(myProfile?.about ?: settings.cachedAbout)
+    }
     var phoneInput by remember(myProfile?.phoneNumber) { mutableStateOf(myProfile?.phoneNumber ?: "") }
     var backupPassword by remember { mutableStateOf("") }
     var smsCodeInput by remember { mutableStateOf("") }
@@ -88,6 +121,50 @@ fun BackupAndSettingsScreen(
     var pendingRestoreUri by remember { mutableStateOf<Uri?>(null) }
     var pendingRestoreLocal by remember { mutableStateOf<BackupSummary?>(null) }
     var restorePasswordPrompt by remember { mutableStateOf("") }
+
+    var showBannerOptionsDialog by remember { mutableStateOf(false) }
+    var bannerUrlInput by remember(effectiveBannerUrl) { mutableStateOf(effectiveBannerUrl.orEmpty()) }
+
+    var showAvatarOptionsDialog by remember { mutableStateOf(false) }
+    var avatarUrlInput by remember(effectivePhotoUrl) { mutableStateOf(effectivePhotoUrl.orEmpty()) }
+
+    val bannerGalleryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.uploadBannerFromGallery(uri)
+        }
+    }
+
+    val avatarImageLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.uploadAvatarImageOrGif(uri)
+        }
+    }
+
+    val avatarVideoLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.uploadAvatarVideo(uri)
+        }
+    }
+
+    val defaultZipFolderLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { treeUri ->
+        if (treeUri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            }
+            viewModel.setDefaultZipExtractUri(treeUri.toString())
+        }
+    }
 
     val createZipLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/zip")
@@ -132,7 +209,22 @@ fun BackupAndSettingsScreen(
                 )
             }
 
-            if (isBusy) {
+            val uploadPct = mediaUploadProgress
+            if (uploadPct != null) {
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        LinearProgressIndicator(
+                            progress = { uploadPct },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            text = "Enviando mídia do perfil ${(uploadPct * 100).toInt()}%…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            } else if (isBusy) {
                 item {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
@@ -157,7 +249,7 @@ fun BackupAndSettingsScreen(
                 }
             }
 
-            // Profile & Phone SMS Verification Card
+            // Profile Banner + Animated Avatar + Phone SMS Verification Card
             item {
                 Card(
                     shape = RoundedCornerShape(26.dp),
@@ -165,92 +257,229 @@ fun BackupAndSettingsScreen(
                         containerColor = MaterialTheme.colorScheme.surfaceContainerLow
                     )
                 ) {
-                    Column(
-                        modifier = Modifier.padding(18.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    Column {
+                        // Top Profile Banner Header
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(150.dp)
                         ) {
-                            Zap2Avatar(
-                                name = myProfile?.displayName ?: "Zap2",
-                                photoUrl = myProfile?.photoUrl,
-                                online = true,
-                                size = 56.dp
+                            val bannerGradient = Brush.linearGradient(
+                                colors = listOf(
+                                    MaterialTheme.colorScheme.primaryContainer,
+                                    MaterialTheme.colorScheme.tertiaryContainer
+                                )
                             )
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = myProfile?.displayName ?: "Carregando…",
-                                    style = MaterialTheme.typography.titleLarge
-                                )
-                                Text(
-                                    text = myProfile?.email ?: "UID: ${viewModel.currentUserId.take(12)}…",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(132.dp)
+                                    .clip(RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp))
+                                    .background(bannerGradient)
+                                    .clickable { showBannerOptionsDialog = true }
+                                    .testTag("profile_banner_header")
+                            ) {
+                                if (!effectiveBannerUrl.isNullOrBlank()) {
+                                    SubcomposeAsyncImage(
+                                        model = effectiveBannerUrl,
+                                        contentDescription = "Banner do perfil",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize(),
+                                        loading = {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .background(bannerGradient)
+                                            )
+                                        },
+                                        error = {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .background(bannerGradient)
+                                            )
+                                        }
+                                    )
+                                }
                             }
-                            if (myProfile?.phoneVerified == true) {
-                                Icon(
-                                    Icons.Rounded.Verified,
-                                    contentDescription = "Telefone verificado",
-                                    tint = MaterialTheme.colorScheme.primary
+
+                            Surface(
+                                onClick = { showBannerOptionsDialog = true },
+                                shape = RoundedCornerShape(16.dp),
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(12.dp)
+                                    .heightIn(min = 40.dp)
+                                    .testTag("edit_banner_button")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Edit,
+                                        contentDescription = "Alterar banner",
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = "Banner",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(start = 18.dp)
+                                    .offset(y = 14.dp)
+                                    .clickable { showAvatarOptionsDialog = true }
+                                    .testTag("edit_avatar_button")
+                            ) {
+                                Zap2Avatar(
+                                    name = effectiveName,
+                                    photoUrl = effectivePhotoUrl,
+                                    online = true,
+                                    size = 76.dp,
+                                    modifier = Modifier.border(
+                                        3.dp,
+                                        MaterialTheme.colorScheme.surfaceContainerLow,
+                                        com.example.ui.theme.Zap2ExpressiveShapes.SquircleAvatar
+                                    )
                                 )
+                                Surface(
+                                    shape = CircleShape,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .size(26.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.CameraAlt,
+                                            contentDescription = "Alterar foto ou MP4",
+                                            tint = MaterialTheme.colorScheme.onPrimary,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                }
                             }
                         }
 
-                        OutlinedTextField(
-                            value = displayName,
-                            onValueChange = { displayName = it },
-                            label = { Text("Nome de exibição") },
-                            singleLine = true,
-                            shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = about,
-                            onValueChange = { about = it },
-                            label = { Text("Recado / Status") },
-                            singleLine = true,
-                            shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = phoneInput,
-                            onValueChange = { phoneInput = it },
-                            label = { Text("Telefone (ex: +5511999998888)") },
-                            singleLine = true,
-                            shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        Column(
+                            modifier = Modifier.padding(start = 18.dp, end = 18.dp, top = 20.dp, bottom = 18.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Button(
-                                onClick = { viewModel.updateProfile(displayName, about, phoneInput) },
-                                enabled = !isBusy && displayName.isNotBlank(),
-                                shape = RoundedCornerShape(18.dp),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .testTag("save_profile_button")
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("Salvar Perfil")
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = effectiveName,
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = myProfile?.email ?: "UID: ${viewModel.currentUserId.take(12)}…",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                if (myProfile?.phoneVerified == true) {
+                                    Icon(
+                                        Icons.Rounded.Verified,
+                                        contentDescription = "Telefone verificado",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
                             }
-                            OutlinedButton(
-                                onClick = {
-                                    val activity = context as? Activity ?: return@OutlinedButton
-                                    viewModel.startPhoneSmsVerification(activity, phoneInput)
-                                },
-                                enabled = !isBusy && phoneInput.isNotBlank(),
-                                shape = RoundedCornerShape(18.dp),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .testTag("verify_sms_button")
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Icon(Icons.Rounded.PhoneAndroid, contentDescription = null, Modifier.size(18.dp))
-                                Text(" Verificar SMS", modifier = Modifier.padding(start = 4.dp))
+                                OutlinedButton(
+                                    onClick = { showAvatarOptionsDialog = true },
+                                    shape = RoundedCornerShape(14.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 48.dp)
+                                ) {
+                                    Icon(Icons.Rounded.Videocam, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Text(" Foto / MP4", modifier = Modifier.padding(start = 4.dp))
+                                }
+                                OutlinedButton(
+                                    onClick = { showBannerOptionsDialog = true },
+                                    shape = RoundedCornerShape(14.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 48.dp)
+                                ) {
+                                    Icon(Icons.Rounded.PhotoLibrary, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Text(" Banner", modifier = Modifier.padding(start = 4.dp))
+                                }
+                            }
+
+                            OutlinedTextField(
+                                value = displayName,
+                                onValueChange = { displayName = it },
+                                label = { Text("Nome de exibição") },
+                                singleLine = true,
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = about,
+                                onValueChange = { about = it },
+                                label = { Text("Recado / Status") },
+                                singleLine = true,
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = phoneInput,
+                                onValueChange = { phoneInput = it },
+                                label = { Text("Telefone (ex: +5511999998888)") },
+                                singleLine = true,
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Button(
+                                    onClick = { viewModel.updateProfile(displayName, about, phoneInput) },
+                                    enabled = !isBusy && displayName.isNotBlank(),
+                                    shape = RoundedCornerShape(18.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 48.dp)
+                                        .testTag("save_profile_button")
+                                ) {
+                                    Text("Salvar Perfil")
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        val activity = context as? Activity ?: return@OutlinedButton
+                                        viewModel.startPhoneSmsVerification(activity, phoneInput)
+                                    },
+                                    enabled = !isBusy && phoneInput.isNotBlank(),
+                                    shape = RoundedCornerShape(18.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 48.dp)
+                                        .testTag("verify_sms_button")
+                                ) {
+                                    Icon(Icons.Rounded.PhoneAndroid, contentDescription = null, Modifier.size(18.dp))
+                                    Text(" Verificar SMS", modifier = Modifier.padding(start = 4.dp))
+                                }
                             }
                         }
                     }
@@ -419,6 +648,62 @@ fun BackupAndSettingsScreen(
                 }
             }
 
+            // Default ZIP Extraction Folder Card
+            item {
+                Card(
+                    shape = RoundedCornerShape(26.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(Icons.Rounded.FolderZip, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Text(
+                                text = "Extração de Arquivos ZIP",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Text(
+                            text = "Caminho padrão atual: ${ZipArchiveHelper.formatDefaultExtractSummary(context, settings.defaultZipExtractUri)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { defaultZipFolderLauncher.launch(null) },
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                                    .testTag("pick_default_zip_folder_button")
+                            ) {
+                                Icon(Icons.Rounded.FolderOpen, contentDescription = null, Modifier.size(18.dp))
+                                Text(" Alterar pasta padrão", modifier = Modifier.padding(start = 6.dp))
+                            }
+                            if (settings.defaultZipExtractUri.isNotBlank()) {
+                                TextButton(
+                                    onClick = { viewModel.setDefaultZipExtractUri("") },
+                                    modifier = Modifier.heightIn(min = 48.dp)
+                                ) {
+                                    Text("Restaurar padrão")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Expressive Material 3 Theme Card
             item {
                 Card(
@@ -578,6 +863,191 @@ fun BackupAndSettingsScreen(
                     pendingRestoreLocal = null
                 }) {
                     Text("Cancelar")
+                }
+            }
+        )
+    }
+
+    // Banner Options Dialog
+    if (showBannerOptionsDialog) {
+        AlertDialog(
+            onDismissRequest = { showBannerOptionsDialog = false },
+            title = { Text("Banner do Perfil") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(
+                        onClick = {
+                            showBannerOptionsDialog = false
+                            bannerGalleryLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("banner_pick_gallery_button")
+                    ) {
+                        Icon(Icons.Rounded.PhotoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.size(6.dp))
+                        Text("Escolher imagem da galeria")
+                    }
+
+                    OutlinedTextField(
+                        value = bannerUrlInput,
+                        onValueChange = { bannerUrlInput = it },
+                        label = { Text("Ou cole um link (https://...)") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("banner_url_input")
+                    )
+                    Button(
+                        onClick = {
+                            showBannerOptionsDialog = false
+                            viewModel.saveBannerUrl(bannerUrlInput)
+                        },
+                        enabled = bannerUrlInput.isNotBlank(),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("banner_save_url_button")
+                    ) {
+                        Icon(Icons.Rounded.Link, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.size(6.dp))
+                        Text("Salvar URL do banner")
+                    }
+
+                    if (!effectiveBannerUrl.isNullOrBlank()) {
+                        TextButton(
+                            onClick = {
+                                showBannerOptionsDialog = false
+                                bannerUrlInput = ""
+                                viewModel.saveBannerUrl("")
+                            },
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                        ) {
+                            Icon(Icons.Rounded.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.size(6.dp))
+                            Text("Remover banner")
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showBannerOptionsDialog = false }) {
+                    Text("Fechar")
+                }
+            }
+        )
+    }
+
+    // Animated / Photo Avatar Options Dialog
+    if (showAvatarOptionsDialog) {
+        AlertDialog(
+            onDismissRequest = { showAvatarOptionsDialog = false },
+            title = { Text("Foto / Avatar Animado") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Defina uma foto, GIF ou vídeo MP4 curto em loop automático sem som (ou cole uma URL direta).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Button(
+                        onClick = {
+                            showAvatarOptionsDialog = false
+                            avatarImageLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("avatar_pick_image_button")
+                    ) {
+                        Icon(Icons.Rounded.PhotoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.size(6.dp))
+                        Text("Foto ou GIF da galeria")
+                    }
+
+                    Button(
+                        onClick = {
+                            showAvatarOptionsDialog = false
+                            avatarVideoLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                            )
+                        },
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("avatar_pick_mp4_button")
+                    ) {
+                        Icon(Icons.Rounded.Videocam, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.size(6.dp))
+                        Text("MP4 curto da galeria (estilo GIF)")
+                    }
+
+                    OutlinedTextField(
+                        value = avatarUrlInput,
+                        onValueChange = { avatarUrlInput = it },
+                        label = { Text("URL direta (imagem, .gif ou .mp4)") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("avatar_url_input")
+                    )
+                    Button(
+                        onClick = {
+                            showAvatarOptionsDialog = false
+                            viewModel.saveAvatarUrl(avatarUrlInput)
+                        },
+                        enabled = avatarUrlInput.isNotBlank(),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("avatar_save_url_button")
+                    ) {
+                        Icon(Icons.Rounded.Link, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.size(6.dp))
+                        Text("Salvar URL do avatar")
+                    }
+
+                    if (!effectivePhotoUrl.isNullOrBlank()) {
+                        TextButton(
+                            onClick = {
+                                showAvatarOptionsDialog = false
+                                avatarUrlInput = ""
+                                viewModel.saveAvatarUrl("")
+                            },
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                        ) {
+                            Icon(Icons.Rounded.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.size(6.dp))
+                            Text("Remover foto de perfil")
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showAvatarOptionsDialog = false }) {
+                    Text("Fechar")
                 }
             }
         )

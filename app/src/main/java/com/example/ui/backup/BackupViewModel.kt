@@ -60,6 +60,9 @@ class BackupViewModel(
     private val _verificationId = MutableStateFlow<String?>(null)
     val verificationId: StateFlow<String?> = _verificationId.asStateFlow()
 
+    private val _mediaUploadProgress = MutableStateFlow<Float?>(null)
+    val mediaUploadProgress: StateFlow<Float?> = _mediaUploadProgress.asStateFlow()
+
     private var resendToken: PhoneAuthProvider.ForceResendingToken? = null
     private var pendingPhoneE164: String = ""
 
@@ -84,6 +87,95 @@ class BackupViewModel(
             }.onFailure { err ->
                 _statusMessage.value = err.localizedMessage ?: "Falha ao atualizar perfil."
             }
+            _isBusy.value = false
+        }
+    }
+
+    fun uploadBannerFromGallery(uri: Uri) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            _mediaUploadProgress.value = 0f
+            userRepository.updateProfileBanner(
+                localImageUri = uri,
+                onProgress = { _mediaUploadProgress.value = it }
+            ).onSuccess {
+                _statusMessage.value = "Banner atualizado na nuvem e salvo no cache local!"
+            }.onFailure { err ->
+                _statusMessage.value = err.localizedMessage ?: "Falha ao enviar banner."
+            }
+            _mediaUploadProgress.value = null
+            _isBusy.value = false
+        }
+    }
+
+    fun saveBannerUrl(url: String) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            userRepository.updateProfileBanner(bannerUrl = url)
+                .onSuccess { saved ->
+                    _statusMessage.value = if (saved.isBlank()) {
+                        "Banner removido do perfil."
+                    } else {
+                        "Banner salvo na nuvem e no backup local!"
+                    }
+                }
+                .onFailure { err ->
+                    _statusMessage.value = err.localizedMessage ?: "URL inválida para banner."
+                }
+            _isBusy.value = false
+        }
+    }
+
+    fun uploadAvatarImageOrGif(uri: Uri) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            _mediaUploadProgress.value = 0f
+            userRepository.updateProfileAvatar(
+                localMediaUri = uri,
+                isVideo = false,
+                onProgress = { _mediaUploadProgress.value = it }
+            ).onSuccess {
+                _statusMessage.value = "Foto de perfil atualizada!"
+            }.onFailure { err ->
+                _statusMessage.value = err.localizedMessage ?: "Falha ao atualizar foto de perfil."
+            }
+            _mediaUploadProgress.value = null
+            _isBusy.value = false
+        }
+    }
+
+    fun uploadAvatarVideo(uri: Uri) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            _mediaUploadProgress.value = 0f
+            userRepository.updateProfileAvatar(
+                localMediaUri = uri,
+                isVideo = true,
+                onProgress = { _mediaUploadProgress.value = it }
+            ).onSuccess {
+                _statusMessage.value = "Avatar animado (MP4 em loop) atualizado!"
+            }.onFailure { err ->
+                _statusMessage.value = err.localizedMessage ?: "Falha ao enviar vídeo de perfil."
+            }
+            _mediaUploadProgress.value = null
+            _isBusy.value = false
+        }
+    }
+
+    fun saveAvatarUrl(url: String) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            userRepository.updateProfileAvatar(avatarUrl = url)
+                .onSuccess { saved ->
+                    _statusMessage.value = if (saved.isBlank()) {
+                        "Foto de perfil removida."
+                    } else {
+                        "Foto de perfil salva (suporta imagem, GIF ou MP4)!"
+                    }
+                }
+                .onFailure { err ->
+                    _statusMessage.value = err.localizedMessage ?: "URL inválida para avatar."
+                }
             _isBusy.value = false
         }
     }
@@ -258,6 +350,17 @@ class BackupViewModel(
 
     fun setAutoCloudBackup(enabled: Boolean) {
         viewModelScope.launch { settingsStore.setAutoCloudBackup(enabled) }
+    }
+
+    fun setDefaultZipExtractUri(uriString: String) {
+        viewModelScope.launch {
+            settingsStore.setDefaultZipExtractUri(uriString)
+            _statusMessage.value = if (uriString.isBlank()) {
+                "Caminho padrão de extração ZIP restaurado para a pasta do Zap2."
+            } else {
+                "Pasta padrão de extração ZIP atualizada!"
+            }
+        }
     }
 
     fun signOut(context: Context, onComplete: () -> Unit) {

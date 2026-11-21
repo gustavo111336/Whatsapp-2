@@ -29,6 +29,10 @@ data class LocalMessageEntity(
     val mediaUrl: String?,
     val localMediaPath: String?,
     val mediaDurationMs: Long?,
+    val fileName: String? = null,
+    val fileSizeBytes: Long? = null,
+    val mimeType: String? = null,
+    val edited: Boolean = false,
     val createdAtMs: Long
 )
 

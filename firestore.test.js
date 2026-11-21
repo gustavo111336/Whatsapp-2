@@ -78,12 +78,21 @@ test("PII isolation: users/{uid} is strictly owner-only while public_profiles/{u
   await assertFails(bobDb.collection("users").doc(ALICE_UID).get());
   await assertFails(bobDb.collection("users").get());
 
-  // Alice writes public_profile and phone_lookup
+  // Alice writes public_profile (including animated photoUrl & bannerUrl) and phone_lookup
+  await assertSucceeds(
+    aliceDb.collection("users").doc(ALICE_UID).update({
+      photoUrl: "https://cdn.example.com/alice_avatar.mp4",
+      bannerUrl: "https://cdn.example.com/alice_banner.jpg",
+      updatedAt: new Date(Date.now() - 1200),
+    })
+  );
   await assertSucceeds(
     aliceDb.collection("public_profiles").doc(ALICE_UID).set({
       uid: ALICE_UID,
       displayName: "Alice Silva",
       about: "Disponível no Zap2",
+      photoUrl: "https://cdn.example.com/alice_avatar.mp4",
+      bannerUrl: "https://cdn.example.com/alice_banner.jpg",
       online: true,
       lastSeen: past,
       updatedAt: past,
@@ -342,12 +351,80 @@ test("Group chats, messages, and typing indicator parity & security", async () =
       participantUids: [ALICE_UID, BOB_UID, CHARLIE_UID],
       messageType: "VIDEO",
       text: "",
-      mediaUrl: "data:video/mp4;base64," + "A".repeat(1024),
+      mediaUrl: "https://firebasestorage.googleapis.com/v0/b/demo/o/video.mp4?alt=media",
       mediaDurationMs: 4200,
+      fileName: "video.mp4",
+      fileSizeBytes: 12582912,
+      mimeType: "video/mp4",
       deliveredTo: [ALICE_UID],
       readBy: [ALICE_UID],
       createdAt: new Date(Date.now() - 250),
       updatedAt: new Date(Date.now() - 250),
+    })
+  );
+
+  // PDF, APK, and ZIP messages with metadata succeed and chat preview accepts them
+  await assertSucceeds(
+    aliceDb.collection("chats").doc("group_1").collection("messages").doc("msg_pdf").set({
+      chatId: "group_1",
+      senderId: ALICE_UID,
+      senderName: "Alice",
+      participantUids: [ALICE_UID, BOB_UID, CHARLIE_UID],
+      messageType: "PDF",
+      text: "Manual.pdf",
+      mediaUrl: "https://firebasestorage.googleapis.com/v0/b/demo/o/manual.pdf?alt=media",
+      fileName: "Manual.pdf",
+      fileSizeBytes: 4194304,
+      mimeType: "application/pdf",
+      deliveredTo: [ALICE_UID],
+      readBy: [ALICE_UID],
+      createdAt: new Date(Date.now() - 240),
+      updatedAt: new Date(Date.now() - 240),
+    })
+  );
+  await assertSucceeds(
+    bobDb.collection("chats").doc("group_1").collection("messages").doc("msg_apk").set({
+      chatId: "group_1",
+      senderId: BOB_UID,
+      senderName: "Bob",
+      participantUids: [ALICE_UID, BOB_UID, CHARLIE_UID],
+      messageType: "APK",
+      text: "app-release.apk",
+      mediaUrl: "https://firebasestorage.googleapis.com/v0/b/demo/o/app.apk?alt=media",
+      fileName: "app-release.apk",
+      fileSizeBytes: 25165824,
+      mimeType: "application/vnd.android.package-archive",
+      deliveredTo: [BOB_UID],
+      readBy: [BOB_UID],
+      createdAt: new Date(Date.now() - 230),
+      updatedAt: new Date(Date.now() - 230),
+    })
+  );
+  await assertSucceeds(
+    aliceDb.collection("chats").doc("group_1").collection("messages").doc("msg_zip").set({
+      chatId: "group_1",
+      senderId: ALICE_UID,
+      senderName: "Alice",
+      participantUids: [ALICE_UID, BOB_UID, CHARLIE_UID],
+      messageType: "ZIP",
+      text: "pacote.zip",
+      mediaUrl: "https://firebasestorage.googleapis.com/v0/b/demo/o/pacote.zip?alt=media",
+      fileName: "pacote.zip",
+      fileSizeBytes: 8388608,
+      mimeType: "application/zip",
+      deliveredTo: [ALICE_UID],
+      readBy: [ALICE_UID],
+      createdAt: new Date(Date.now() - 220),
+      updatedAt: new Date(Date.now() - 220),
+    })
+  );
+  await assertSucceeds(
+    aliceDb.collection("chats").doc("group_1").update({
+      lastMessageText: "pacote.zip",
+      lastMessageType: "ZIP",
+      lastMessageSenderId: ALICE_UID,
+      lastMessageAt: new Date(Date.now() - 220),
+      updatedAt: new Date(Date.now() - 220),
     })
   );
 

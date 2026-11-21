@@ -4,22 +4,28 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.model.ChatRoom
 import com.example.data.model.ContactEntry
+import com.example.data.model.PublicProfile
 import com.example.data.model.UiState
 import com.example.data.model.UserProfile
 import com.example.data.remote.ChatRepository
 import com.example.data.remote.UserAndContactsRepository
 import com.example.data.remote.unwrapFirestoreException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class ChatsViewModel(
     private val chatRepository: ChatRepository,
     private val userRepository: UserAndContactsRepository,
@@ -48,8 +54,35 @@ class ChatsViewModel(
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
 
+    private val allChatsFlow = chatRepository.observeChats(currentUserId)
+
+    val peerProfiles: StateFlow<Map<String, PublicProfile>> = allChatsFlow
+        .map { chats ->
+            chats.mapNotNull { it.peerUidForDirect(currentUserId) }.distinct().sorted()
+        }
+        .distinctUntilChanged()
+        .flatMapLatest { peerUids ->
+            if (peerUids.isEmpty()) {
+                flowOf(emptyMap())
+            } else {
+                combine(
+                    peerUids.map { peerUid ->
+                        userRepository.observePublicProfile(peerUid).map { profile -> peerUid to profile }
+                    }
+                ) { pairs ->
+                    pairs.mapNotNull { (uid, prof) -> prof?.let { uid to it } }.toMap()
+                }
+            }
+        }
+        .catch { error ->
+            val root = error.unwrapFirestoreException()
+            if (root == error && error is CancellationException) throw error
+            emit(emptyMap())
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyMap())
+
     val chatsState: StateFlow<UiState<List<ChatRoom>>> = combine(
-        chatRepository.observeChats(currentUserId),
+        allChatsFlow,
         _searchQuery
     ) { chats, query ->
         val filtered = if (query.isBlank()) {

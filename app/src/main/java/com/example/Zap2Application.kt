@@ -7,6 +7,10 @@ import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
 import android.os.Bundle
+import coil.ImageLoader
+import coil.ImageLoaderFactory
+import coil.decode.GifDecoder
+import coil.decode.ImageDecoderDecoder
 import com.example.data.local.SettingsDataStore
 import com.example.data.local.Zap2Database
 import com.example.data.remote.AuthRepository
@@ -33,14 +37,17 @@ class AppContainer(context: Context) {
 
     val localDao get() = Zap2Database.getInstance(appContext).zap2Dao()
 
-    val userRepository: UserAndContactsRepository
-        get() = UserAndContactsRepository(firestore, localDao)
+    val userRepository: UserAndContactsRepository by lazy {
+        UserAndContactsRepository(appContext, firestore, localDao, settingsStore)
+    }
 
-    val chatRepository: ChatRepository
-        get() = ChatRepository(appContext, firestore, localDao)
+    val chatRepository: ChatRepository by lazy {
+        ChatRepository(appContext, firestore, localDao)
+    }
 
-    val backupRepository: BackupRepository
-        get() = BackupRepository(appContext, firestore, settingsStore)
+    val backupRepository: BackupRepository by lazy {
+        BackupRepository(appContext, firestore, settingsStore)
+    }
 
     val callSignalingRepository: CallSignalingRepository = CallSignalingRepository(firestore)
     val webRtcCallManager: WebRtcCallManager by lazy {
@@ -51,12 +58,25 @@ class AppContainer(context: Context) {
     }
 }
 
-class Zap2Application : Application() {
+class Zap2Application : Application(), ImageLoaderFactory {
     lateinit var container: AppContainer
         private set
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var startedActivityCount = 0
+
+    override fun newImageLoader(): ImageLoader {
+        return ImageLoader.Builder(this)
+            .components {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    add(ImageDecoderDecoder.Factory())
+                } else {
+                    add(GifDecoder.Factory())
+                }
+            }
+            .crossfade(true)
+            .build()
+    }
 
     override fun onCreate() {
         super.onCreate()

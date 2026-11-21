@@ -5,9 +5,10 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.util.Base64
 import android.util.Log
-import java.io.ByteArrayOutputStream
+import android.webkit.MimeTypeMap
 import com.example.R
 import com.example.data.local.LocalChatEntity
 import com.example.data.local.LocalMessageEntity
@@ -16,6 +17,7 @@ import com.example.data.model.ChatMessage
 import com.example.data.model.ChatRoom
 import com.example.data.model.PublicProfile
 import com.example.data.model.TypingStatus
+import com.example.data.model.UploadProgressState
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
@@ -25,10 +27,15 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.snapshots
 import com.google.firebase.storage.FirebaseStorage
+import com.google.firebase.storage.StorageException
+import com.google.firebase.storage.StorageMetadata
 import com.google.firebase.storage.storage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
@@ -37,7 +44,10 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.UUID
 
 class ChatRepository(
@@ -58,6 +68,13 @@ class ChatRepository(
     private val mediaDir: File by lazy {
         File(context.filesDir, "media").apply { mkdirs() }
     }
+
+    private val downloadsDir: File by lazy {
+        File(context.filesDir, "downloads").apply { mkdirs() }
+    }
+
+    private val _uploadProgress = MutableStateFlow<UploadProgressState?>(null)
+    val uploadProgress: StateFlow<UploadProgressState?> = _uploadProgress.asStateFlow()
 
     private fun requireUserId(): String =
         auth.currentUser?.uid
@@ -158,6 +175,10 @@ class ChatRepository(
                                 mediaUrl = m.mediaUrl,
                                 localMediaPath = m.localMediaPath,
                                 mediaDurationMs = m.mediaDurationMs,
+                                fileName = m.fileName,
+                                fileSizeBytes = m.fileSizeBytes,
+                                mimeType = m.mimeType,
+                                edited = m.edited,
                                 createdAtMs = m.createdAt?.toDate()?.time ?: System.currentTimeMillis()
                             )
                         }
@@ -628,30 +649,30 @@ class ChatRepository(
         }
         val msgId = UUID.randomUUID().toString().replace("-", "")
         return try {
-            val (localFile, compressedBytes) = withContext(Dispatchers.IO) {
-                val dest = File(mediaDir, "img_${chat.id}_$msgId.jpg")
-                val bytes = compressUriToJpegBytes(imageUri)
-                dest.writeBytes(bytes)
-                dest to bytes
-            }
-
-            val mediaUrl = if (compressedBytes.size <= MAX_INLINE_MEDIA_BYTES) {
-                "data:image/jpeg;base64,${Base64.encodeToString(compressedBytes, Base64.NO_WRAP)}"
-            } else {
-                val storageRef = storage.reference.child("chats/${chat.id}/media/${localFile.name}")
-                try {
-                    storage.maxUploadRetryTimeMillis = 4_000L
-                    storageRef.putFile(Uri.fromFile(localFile)).await()
-                    storageRef.downloadUrl.await().toString()
-                } catch (storageEx: Exception) {
-                    Log.w(TAG, "Firebase Storage upload unavailable: ${storageEx.message}")
-                    return Result.failure(
-                        IllegalStateException(
-                            "A imagem ainda ficou grande para envio gratuito pelo Firestore. Tente outra foto menor."
-                        )
-                    )
+            val resolvedMime = context.contentResolver.getType(imageUri)?.lowercase() ?: "image/jpeg"
+            val originalName = resolveDisplayName(imageUri) ?: "foto_$msgId.jpg"
+            val (localFile, finalMime) = withContext(Dispatchers.IO) {
+                if (resolvedMime == "image/gif") {
+                    val safeGifName = sanitizeFileName(originalName, "gif")
+                    val dest = File(mediaDir, "img_${chat.id}_${msgId}_$safeGifName")
+                    copyUriToFile(imageUri, dest)
+                    dest to "image/gif"
+                } else {
+                    val dest = File(mediaDir, "img_${chat.id}_$msgId.jpg")
+                    val bytes = compressUriToJpegBytes(imageUri, maxDim = 1600, quality = 88)
+                    dest.writeBytes(bytes)
+                    dest to "image/jpeg"
                 }
             }
+
+            val fileSize = localFile.length()
+            val storagePath = "chats/${chat.id}/media/${localFile.name}"
+            val mediaUrl = uploadFileToStorage(
+                storagePath = storagePath,
+                file = localFile,
+                displayName = originalName,
+                mimeType = finalMime
+            )
 
             val previewText = caption.trim().ifBlank { "📷 Foto" }.take(500)
             val payload = mutableMapOf<String, Any?>(
@@ -661,8 +682,11 @@ class ChatRepository(
                 "participantUids" to chat.participantUids,
                 "messageType" to "IMAGE",
                 "text" to caption.trim().take(4000),
-                "mediaUrl" to mediaUrl.take(MAX_MEDIA_URL_LENGTH),
+                "mediaUrl" to mediaUrl.take(MAX_STORAGE_URL_LENGTH),
                 "localMediaPath" to localFile.absolutePath.take(500),
+                "fileName" to originalName.take(255),
+                "fileSizeBytes" to fileSize,
+                "mimeType" to finalMime.take(128),
                 "deliveredTo" to listOf(uid),
                 "readBy" to listOf(uid),
                 "createdAt" to FieldValue.serverTimestamp(),
@@ -689,6 +713,8 @@ class ChatRepository(
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.CREATE, "chats/${chat.id}/messages/$msgId")
             Result.failure(e)
+        } finally {
+            _uploadProgress.value = null
         }
     }
 
@@ -705,29 +731,19 @@ class ChatRepository(
         }
         val msgId = UUID.randomUUID().toString().replace("-", "")
         return try {
-            val (savedLocal, audioBytes) = withContext(Dispatchers.IO) {
+            val savedLocal = withContext(Dispatchers.IO) {
                 val dest = File(mediaDir, "aud_${chat.id}_$msgId.m4a")
                 audioFile.copyTo(dest, overwrite = true)
-                dest to dest.readBytes()
+                dest
             }
 
-            val mediaUrl = if (audioBytes.size <= MAX_INLINE_MEDIA_BYTES) {
-                "data:audio/mp4;base64,${Base64.encodeToString(audioBytes, Base64.NO_WRAP)}"
-            } else {
-                val storageRef = storage.reference.child("chats/${chat.id}/media/${savedLocal.name}")
-                try {
-                    storage.maxUploadRetryTimeMillis = 4_000L
-                    storageRef.putFile(Uri.fromFile(savedLocal)).await()
-                    storageRef.downloadUrl.await().toString()
-                } catch (storageEx: Exception) {
-                    Log.w(TAG, "Firebase Storage audio upload unavailable: ${storageEx.message}")
-                    return Result.failure(
-                        IllegalStateException(
-                            "Áudio muito longo para envio gratuito pelo Firestore (limite ~60s). Grave uma mensagem mais curta."
-                        )
-                    )
-                }
-            }
+            val fileSize = savedLocal.length()
+            val mediaUrl = uploadFileToStorage(
+                storagePath = "chats/${chat.id}/media/${savedLocal.name}",
+                file = savedLocal,
+                displayName = "Áudio de voz.m4a",
+                mimeType = "audio/mp4"
+            )
 
             val payload = mapOf(
                 "chatId" to chat.id,
@@ -736,9 +752,12 @@ class ChatRepository(
                 "participantUids" to chat.participantUids,
                 "messageType" to "AUDIO",
                 "text" to "",
-                "mediaUrl" to mediaUrl.take(MAX_MEDIA_URL_LENGTH),
+                "mediaUrl" to mediaUrl.take(MAX_STORAGE_URL_LENGTH),
                 "localMediaPath" to savedLocal.absolutePath.take(500),
                 "mediaDurationMs" to durationMs.coerceAtLeast(0L),
+                "fileName" to savedLocal.name.take(255),
+                "fileSizeBytes" to fileSize,
+                "mimeType" to "audio/mp4",
                 "deliveredTo" to listOf(uid),
                 "readBy" to listOf(uid),
                 "createdAt" to FieldValue.serverTimestamp(),
@@ -765,6 +784,8 @@ class ChatRepository(
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.CREATE, "chats/${chat.id}/messages/$msgId")
             Result.failure(e)
+        } finally {
+            _uploadProgress.value = null
         }
     }
 
@@ -781,36 +802,27 @@ class ChatRepository(
         }
         val msgId = UUID.randomUUID().toString().replace("-", "")
         return try {
-            val (localFile, durationMs, videoBytes) = withContext(Dispatchers.IO) {
-                val dest = File(mediaDir, "vid_${chat.id}_$msgId.mp4")
-                context.contentResolver.openInputStream(videoUri)?.use { input ->
-                    dest.outputStream().use { output -> input.copyTo(output) }
-                } ?: throw IllegalStateException("Não foi possível ler o vídeo selecionado.")
+            val originalName = resolveDisplayName(videoUri) ?: "video_$msgId.mp4"
+            val mimeType = context.contentResolver.getType(videoUri)?.lowercase() ?: "video/mp4"
+            val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType)
+                ?: originalName.substringAfterLast('.', "mp4").lowercase().ifBlank { "mp4" }
 
+            val (localFile, durationMs) = withContext(Dispatchers.IO) {
+                val dest = File(mediaDir, "vid_${chat.id}_$msgId.$ext")
+                copyUriToFile(videoUri, dest)
                 val dur = readVideoDurationMs(dest)
-                Triple(dest, dur, dest.readBytes())
+                dest to dur
             }
 
-            val mediaUrl = if (videoBytes.size <= MAX_INLINE_MEDIA_BYTES) {
-                "data:video/mp4;base64,${Base64.encodeToString(videoBytes, Base64.NO_WRAP)}"
-            } else {
-                val storageRef = storage.reference.child("chats/${chat.id}/media/${localFile.name}")
-                try {
-                    storage.maxUploadRetryTimeMillis = 4_000L
-                    storageRef.putFile(Uri.fromFile(localFile)).await()
-                    storageRef.downloadUrl.await().toString()
-                } catch (storageEx: Exception) {
-                    Log.w(TAG, "Firebase Storage video upload unavailable: ${storageEx.message}")
-                    localFile.delete()
-                    return Result.failure(
-                        IllegalStateException(
-                            "Vídeo maior que 540 KB exige Firebase Storage (plano Blaze). Selecione um clipe menor/mais curto para envio gratuito."
-                        )
-                    )
-                }
-            }
+            val fileSize = localFile.length()
+            val mediaUrl = uploadFileToStorage(
+                storagePath = "chats/${chat.id}/media/${localFile.name}",
+                file = localFile,
+                displayName = originalName,
+                mimeType = mimeType
+            )
 
-            val previewText = caption.trim().ifBlank { "🎬 Vídeo" }.take(500)
+            val previewText = caption.trim().ifBlank { "🎬 Vídeo ($originalName)" }.take(500)
             val payload = mutableMapOf<String, Any?>(
                 "chatId" to chat.id,
                 "senderId" to uid,
@@ -818,9 +830,12 @@ class ChatRepository(
                 "participantUids" to chat.participantUids,
                 "messageType" to "VIDEO",
                 "text" to caption.trim().take(4000),
-                "mediaUrl" to mediaUrl.take(MAX_MEDIA_URL_LENGTH),
+                "mediaUrl" to mediaUrl.take(MAX_STORAGE_URL_LENGTH),
                 "localMediaPath" to localFile.absolutePath.take(500),
                 "mediaDurationMs" to durationMs.coerceAtLeast(0L),
+                "fileName" to originalName.take(255),
+                "fileSizeBytes" to fileSize,
+                "mimeType" to mimeType.take(128),
                 "deliveredTo" to listOf(uid),
                 "readBy" to listOf(uid),
                 "createdAt" to FieldValue.serverTimestamp(),
@@ -847,6 +862,259 @@ class ChatRepository(
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.CREATE, "chats/${chat.id}/messages/$msgId")
             Result.failure(e)
+        } finally {
+            _uploadProgress.value = null
+        }
+    }
+
+    suspend fun sendDocumentMessage(
+        chat: ChatRoom,
+        senderName: String,
+        fileUri: Uri,
+        caption: String = ""
+    ): Result<Unit> {
+        val uid = try {
+            requireUserId()
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+        val msgId = UUID.randomUUID().toString().replace("-", "")
+        return try {
+            val originalName = resolveDisplayName(fileUri) ?: "arquivo_$msgId"
+            val detectedMime = resolveMimeType(fileUri, originalName)
+            val ext = originalName.substringAfterLast('.', "").lowercase().ifBlank {
+                MimeTypeMap.getSingleton().getExtensionFromMimeType(detectedMime) ?: "bin"
+            }
+
+            val messageType = classifyDocumentType(originalName, detectedMime)
+            if (messageType == "IMAGE") {
+                return sendImageMessage(chat, senderName, fileUri, caption)
+            }
+            if (messageType == "VIDEO") {
+                return sendVideoMessage(chat, senderName, fileUri, caption)
+            }
+
+            val localFile = withContext(Dispatchers.IO) {
+                val safeName = sanitizeFileName(originalName, ext)
+                val dest = File(downloadsDir, "${chat.id}_${msgId}_$safeName")
+                copyUriToFile(fileUri, dest)
+                dest
+            }
+
+            val fileSize = localFile.length()
+            if (fileSize <= 0L) {
+                localFile.delete()
+                return Result.failure(IllegalArgumentException("O arquivo selecionado está vazio."))
+            }
+
+            val mediaUrl = uploadFileToStorage(
+                storagePath = "chats/${chat.id}/files/${localFile.name}",
+                file = localFile,
+                displayName = originalName,
+                mimeType = detectedMime
+            )
+
+            val previewLabel = when (messageType) {
+                "PDF" -> "📄 PDF: $originalName"
+                "APK" -> "📦 APK: $originalName"
+                "ZIP" -> "🗜️ ZIP: $originalName"
+                else -> "📎 Arquivo: $originalName"
+            }
+            val previewText = caption.trim().ifBlank { previewLabel }.take(500)
+
+            val payload = mutableMapOf<String, Any?>(
+                "chatId" to chat.id,
+                "senderId" to uid,
+                "senderName" to senderName.take(80).ifBlank { "Você" },
+                "participantUids" to chat.participantUids,
+                "messageType" to messageType,
+                "text" to caption.trim().take(4000),
+                "mediaUrl" to mediaUrl.take(MAX_STORAGE_URL_LENGTH),
+                "localMediaPath" to localFile.absolutePath.take(500),
+                "fileName" to originalName.take(255),
+                "fileSizeBytes" to fileSize,
+                "mimeType" to detectedMime.take(128),
+                "deliveredTo" to listOf(uid),
+                "readBy" to listOf(uid),
+                "createdAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp()
+            ).filterValues { it != null } as Map<String, Any>
+
+            db.collection("chats").document(chat.id)
+                .collection("messages").document(msgId)
+                .set(payload)
+                .await()
+
+            db.collection("chats").document(chat.id).update(
+                mapOf(
+                    "lastMessageText" to previewText,
+                    "lastMessageType" to messageType,
+                    "lastMessageSenderId" to uid,
+                    "lastMessageAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, "chats/${chat.id}/messages/$msgId")
+            Result.failure(e)
+        } finally {
+            _uploadProgress.value = null
+        }
+    }
+
+    suspend fun downloadMessageFile(
+        message: ChatMessage,
+        onProgress: (Float) -> Unit = {}
+    ): Result<File> = withContext(Dispatchers.IO) {
+        try {
+            val localExisting = message.localMediaPath?.let(::File)?.takeIf { it.exists() && it.length() > 0L }
+            if (localExisting != null) {
+                onProgress(1f)
+                return@withContext Result.success(localExisting)
+            }
+
+            val preferredName = sanitizeFileName(
+                message.fileName ?: "arquivo_${message.id}",
+                defaultExtForType(message.messageType)
+            )
+            val cachedDest = File(downloadsDir, "${message.id}_$preferredName")
+            if (cachedDest.exists() && cachedDest.length() > 0L &&
+                (message.fileSizeBytes == null || message.fileSizeBytes <= 0L || cachedDest.length() == message.fileSizeBytes)
+            ) {
+                onProgress(1f)
+                return@withContext Result.success(cachedDest)
+            }
+
+            val url = message.mediaUrl?.takeIf { it.isNotBlank() }
+                ?: return@withContext Result.failure(IllegalStateException("URL do arquivo indisponível."))
+
+            if (url.startsWith("data:")) {
+                val b64 = url.substringAfter(",", "")
+                val bytes = Base64.decode(b64, Base64.DEFAULT)
+                cachedDest.writeBytes(bytes)
+                onProgress(1f)
+                return@withContext Result.success(cachedDest)
+            }
+
+            val tempDest = File(downloadsDir, "${message.id}_${preferredName}.part")
+            try {
+                if (url.contains("firebasestorage.googleapis.com") || url.startsWith("gs://")) {
+                    val task = storage.getReferenceFromUrl(url).getFile(tempDest)
+                    task.addOnProgressListener { snap ->
+                        val total = snap.totalByteCount
+                        if (total > 0L) {
+                            onProgress((snap.bytesTransferred.toFloat() / total.toFloat()).coerceIn(0f, 1f))
+                        }
+                    }
+                    task.await()
+                } else {
+                    val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 15_000
+                        readTimeout = 30_000
+                        instanceFollowRedirects = true
+                    }
+                    try {
+                        val code = conn.responseCode
+                        if (code !in 200..299) {
+                            throw IllegalStateException("Erro ao baixar arquivo (HTTP $code).")
+                        }
+                        val total = conn.contentLengthLong.coerceAtLeast(message.fileSizeBytes ?: 0L)
+                        var copied = 0L
+                        conn.inputStream.use { input ->
+                            tempDest.outputStream().use { output ->
+                                val buf = ByteArray(8192)
+                                var read: Int
+                                while (input.read(buf).also { read = it } != -1) {
+                                    output.write(buf, 0, read)
+                                    copied += read
+                                    if (total > 0L) {
+                                        onProgress((copied.toFloat() / total.toFloat()).coerceIn(0f, 1f))
+                                    }
+                                }
+                            }
+                        }
+                    } finally {
+                        conn.disconnect()
+                    }
+                }
+                if (cachedDest.exists()) cachedDest.delete()
+                if (!tempDest.renameTo(cachedDest)) {
+                    tempDest.copyTo(cachedDest, overwrite = true)
+                    tempDest.delete()
+                }
+                onProgress(1f)
+                Result.success(cachedDest)
+            } catch (e: Exception) {
+                tempDest.delete()
+                throw e
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: StorageException) {
+            val msg = when (e.errorCode) {
+                StorageException.ERROR_OBJECT_NOT_FOUND -> "Arquivo não encontrado no Firebase Storage."
+                StorageException.ERROR_NOT_AUTHORIZED -> "Sem permissão para baixar este arquivo."
+                else -> "Falha ao baixar arquivo: ${e.localizedMessage ?: "verifique sua conexão."}"
+            }
+            Result.failure(IllegalStateException(msg, e))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun uploadFileToStorage(
+        storagePath: String,
+        file: File,
+        displayName: String,
+        mimeType: String
+    ): String {
+        val totalSize = file.length().coerceAtLeast(1L)
+        _uploadProgress.value = UploadProgressState(
+            fileName = displayName,
+            bytesTransferred = 0L,
+            totalBytes = totalSize,
+            progress = 0f
+        )
+
+        storage.maxUploadRetryTimeMillis = 120_000L
+        val ref = storage.reference.child(storagePath)
+        val metadata = StorageMetadata.Builder()
+            .setContentType(mimeType.ifBlank { "application/octet-stream" })
+            .build()
+
+        val task = ref.putFile(Uri.fromFile(file), metadata)
+        task.addOnProgressListener { snap ->
+            val total = snap.totalByteCount.takeIf { it > 0L } ?: totalSize
+            val transferred = snap.bytesTransferred.coerceAtLeast(0L)
+            _uploadProgress.value = UploadProgressState(
+                fileName = displayName,
+                bytesTransferred = transferred,
+                totalBytes = total,
+                progress = (transferred.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+            )
+        }
+
+        return try {
+            task.await()
+            ref.downloadUrl.await().toString()
+        } catch (e: StorageException) {
+            Log.w(TAG, "Firebase Storage upload error (${e.errorCode}): ${e.message}")
+            val friendly = when (e.errorCode) {
+                StorageException.ERROR_BUCKET_NOT_FOUND,
+                StorageException.ERROR_OBJECT_NOT_FOUND ->
+                    "Firebase Storage não encontrado/ativado neste projeto. Ative o Storage no Console do Firebase para enviar arquivos grandes."
+                StorageException.ERROR_NOT_AUTHORIZED,
+                StorageException.ERROR_NOT_AUTHENTICATED ->
+                    "Sem permissão no Firebase Storage para enviar este arquivo. Verifique as regras do Storage."
+                StorageException.ERROR_RETRY_LIMIT_EXCEEDED ->
+                    "Tempo limite excedido ao enviar $displayName. Verifique sua conexão e tente novamente."
+                else ->
+                    "Falha ao enviar $displayName: ${e.localizedMessage ?: "erro no Firebase Storage."}"
+            }
+            throw IllegalStateException(friendly, e)
         }
     }
 
@@ -887,6 +1155,10 @@ class ChatRepository(
                     "IMAGE" -> cleanText.ifBlank { "📷 Foto" }
                     "VIDEO" -> cleanText.ifBlank { "🎬 Vídeo" }
                     "AUDIO" -> "🎤 Mensagem de voz"
+                    "PDF" -> cleanText.ifBlank { "📄 PDF: ${message.fileName ?: "Documento"}" }
+                    "APK" -> cleanText.ifBlank { "📦 APK: ${message.fileName ?: "Aplicativo"}" }
+                    "ZIP" -> cleanText.ifBlank { "🗜️ ZIP: ${message.fileName ?: "Arquivo"}" }
+                    "FILE" -> cleanText.ifBlank { "📎 Arquivo: ${message.fileName ?: "Anexo"}" }
                     else -> cleanText
                 }.take(500)
                 db.collection("chats").document(chat.id).update(
@@ -959,6 +1231,11 @@ class ChatRepository(
             message.localMediaPath?.let { path ->
                 runCatching { File(path).delete() }
             }
+            message.mediaUrl?.takeIf {
+                it.contains("firebasestorage.googleapis.com") || it.startsWith("gs://")
+            }?.let { remoteUrl ->
+                runCatching { storage.getReferenceFromUrl(remoteUrl).delete().await() }
+            }
 
             // Update chat preview cleanly to the previous message (or blank), leaving zero trace
             val fallback = remainingMessagesAfterDelete.lastOrNull()
@@ -967,6 +1244,10 @@ class ChatRepository(
                 "IMAGE" -> fallback.text.ifBlank { "📷 Foto" }
                 "VIDEO" -> fallback.text.ifBlank { "🎬 Vídeo" }
                 "AUDIO" -> "🎤 Mensagem de voz"
+                "PDF" -> fallback.text.ifBlank { "📄 PDF: ${fallback.fileName ?: "Documento"}" }
+                "APK" -> fallback.text.ifBlank { "📦 APK: ${fallback.fileName ?: "Aplicativo"}" }
+                "ZIP" -> fallback.text.ifBlank { "🗜️ ZIP: ${fallback.fileName ?: "Arquivo"}" }
+                "FILE" -> fallback.text.ifBlank { "📎 Arquivo: ${fallback.fileName ?: "Anexo"}" }
                 else -> fallback.text
             }.take(500)
 
@@ -989,6 +1270,85 @@ class ChatRepository(
         }
     }
 
+    private fun resolveDisplayName(uri: Uri): String? {
+        runCatching {
+            context.contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) {
+                        val name = cursor.getString(idx)?.trim()
+                        if (!name.isNullOrBlank()) return name
+                    }
+                }
+            }
+        }
+        return uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+    }
+
+    private fun resolveMimeType(uri: Uri, fileName: String): String {
+        val crMime = context.contentResolver.getType(uri)?.lowercase()
+        if (!crMime.isNullOrBlank() && crMime != "application/octet-stream") {
+            return crMime
+        }
+        val ext = fileName.substringAfterLast('.', "").lowercase()
+        return when (ext) {
+            "pdf" -> "application/pdf"
+            "apk" -> "application/vnd.android.package-archive"
+            "zip" -> "application/zip"
+            "jpg", "jpeg" -> "image/jpeg"
+            "png" -> "image/png"
+            "gif" -> "image/gif"
+            "mp4" -> "video/mp4"
+            else -> crMime ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
+        }
+    }
+
+    private fun classifyDocumentType(fileName: String, mimeType: String): String {
+        val lowerName = fileName.lowercase()
+        val lowerMime = mimeType.lowercase()
+        return when {
+            lowerMime == "application/pdf" || lowerName.endsWith(".pdf") -> "PDF"
+            lowerMime == "application/vnd.android.package-archive" || lowerName.endsWith(".apk") -> "APK"
+            lowerMime == "application/zip" || lowerMime == "application/x-zip-compressed" || lowerName.endsWith(".zip") -> "ZIP"
+            lowerMime.startsWith("image/") -> "IMAGE"
+            lowerMime.startsWith("video/") -> "VIDEO"
+            else -> "FILE"
+        }
+    }
+
+    private fun sanitizeFileName(raw: String, fallbackExt: String): String {
+        val cleaned = raw.replace(Regex("[^a-zA-Z0-9._\\- ()]"), "_").trim()
+        return if (cleaned.isBlank()) "arquivo.$fallbackExt" else cleaned.take(120)
+    }
+
+    private fun defaultExtForType(messageType: String): String = when (messageType) {
+        "PDF" -> "pdf"
+        "APK" -> "apk"
+        "ZIP" -> "zip"
+        "IMAGE" -> "jpg"
+        "VIDEO" -> "mp4"
+        "AUDIO" -> "m4a"
+        else -> "bin"
+    }
+
+    private fun copyUriToFile(uri: Uri, dest: File) {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            dest.outputStream().use { output ->
+                val buffer = ByteArray(8192)
+                var read: Int
+                while (input.read(buffer).also { read = it } != -1) {
+                    output.write(buffer, 0, read)
+                }
+            }
+        } ?: throw IllegalStateException("Não foi possível ler o arquivo selecionado.")
+    }
+
     private fun readVideoDurationMs(file: File): Long {
         val retriever = MediaMetadataRetriever()
         return try {
@@ -1001,17 +1361,18 @@ class ChatRepository(
         }
     }
 
-    private fun compressUriToJpegBytes(imageUri: Uri): ByteArray {
+    private fun compressUriToJpegBytes(
+        imageUri: Uri,
+        maxDim: Int = 1600,
+        quality: Int = 88
+    ): ByteArray {
         val rawTemp = File(context.cacheDir, "tmp_img_${UUID.randomUUID()}.bin")
         try {
-            context.contentResolver.openInputStream(imageUri)?.use { input ->
-                rawTemp.outputStream().use { output -> input.copyTo(output) }
-            } ?: throw IllegalStateException("Não foi possível ler a imagem selecionada.")
+            copyUriToFile(imageUri, rawTemp)
 
             val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(rawTemp.absolutePath, boundsOpts)
 
-            val maxDim = 840
             var sampleSize = 1
             while (boundsOpts.outWidth / sampleSize > maxDim * 2 || boundsOpts.outHeight / sampleSize > maxDim * 2) {
                 sampleSize *= 2
@@ -1032,16 +1393,11 @@ class ChatRepository(
                 decoded
             }
 
-            try {
-                for (quality in listOf(72, 55, 40, 28)) {
-                    val out = ByteArrayOutputStream()
+            return try {
+                ByteArrayOutputStream().use { out ->
                     scaled.compress(Bitmap.CompressFormat.JPEG, quality, out)
-                    val bytes = out.toByteArray()
-                    if (bytes.size <= 420_000 || quality == 28) {
-                        return bytes
-                    }
+                    out.toByteArray()
                 }
-                return ByteArray(0)
             } finally {
                 scaled.recycle()
             }
@@ -1077,7 +1433,6 @@ class ChatRepository(
 
     private companion object {
         const val TAG = "ChatRepository"
-        const val MAX_INLINE_MEDIA_BYTES = 540_000
-        const val MAX_MEDIA_URL_LENGTH = 780_000
+        const val MAX_STORAGE_URL_LENGTH = 2048
     }
 }

@@ -1,19 +1,24 @@
 package com.example.ui.chatdetail
 
+import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.local.SettingsDataStore
 import com.example.data.model.ChatMessage
 import com.example.data.model.ChatRoom
 import com.example.data.model.ContactEntry
 import com.example.data.model.PublicProfile
 import com.example.data.model.TypingStatus
 import com.example.data.model.UiState
+import com.example.data.model.UploadProgressState
+import com.example.data.model.ZipExtractionResult
 import com.example.data.remote.CallSignalingRepository
 import com.example.data.remote.ChatRepository
 import com.example.data.remote.UserAndContactsRepository
 import com.example.data.remote.unwrapFirestoreException
 import com.example.service.AudioRecorderPlayer
+import com.example.service.ZipArchiveHelper
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -23,10 +28,13 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -37,6 +45,7 @@ class ChatDetailViewModel(
     private val userRepository: UserAndContactsRepository,
     private val callSignalingRepository: CallSignalingRepository,
     val audioPlayer: AudioRecorderPlayer,
+    private val settingsStore: SettingsDataStore,
     val currentUserId: String
 ) : ViewModel() {
 
@@ -51,6 +60,15 @@ class ChatDetailViewModel(
 
     private val _editingMessage = MutableStateFlow<ChatMessage?>(null)
     val editingMessage: StateFlow<ChatMessage?> = _editingMessage.asStateFlow()
+
+    val uploadProgress: StateFlow<UploadProgressState?> = chatRepository.uploadProgress
+
+    private val _fileDownloadProgress = MutableStateFlow<Map<String, Float>>(emptyMap())
+    val fileDownloadProgress: StateFlow<Map<String, Float>> = _fileDownloadProgress.asStateFlow()
+
+    val defaultZipExtractUri: StateFlow<String> = settingsStore.settingsFlow
+        .map { it.defaultZipExtractUri }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), "")
 
     private var myDisplayName: String = "Você"
     private var typingTimeoutJob: Job? = null
@@ -105,6 +123,25 @@ class ChatDetailViewModel(
             emit(null)
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), null)
+
+    val participantProfiles: StateFlow<Map<String, PublicProfile>> = chatRoom
+        .map { room -> room?.participantUids.orEmpty().distinct().sorted() }
+        .distinctUntilChanged()
+        .flatMapLatest { uids ->
+            if (uids.isEmpty()) {
+                flowOf(emptyMap())
+            } else {
+                combine(
+                    uids.map { uid ->
+                        userRepository.observePublicProfile(uid).map { profile -> uid to profile }
+                    }
+                ) { pairs ->
+                    pairs.mapNotNull { (uid, profile) -> profile?.let { uid to it } }.toMap()
+                }
+            }
+        }
+        .catch { emit(emptyMap()) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyMap())
 
     val savedContacts: StateFlow<List<ContactEntry>> =
         userRepository.observeSavedContacts(currentUserId)
@@ -256,6 +293,82 @@ class ChatDetailViewModel(
                 }
             _isSendingMedia.value = false
         }
+    }
+
+    fun sendDocument(uri: Uri) {
+        val room = chatRoom.value ?: return
+        viewModelScope.launch {
+            _isSendingMedia.value = true
+            chatRepository.sendDocumentMessage(room, myDisplayName, uri)
+                .onFailure { err ->
+                    _errorBanner.value = err.localizedMessage ?: "Falha ao enviar arquivo."
+                }
+            _isSendingMedia.value = false
+        }
+    }
+
+    fun downloadAndPrepareFile(message: ChatMessage, onReady: (File) -> Unit) {
+        viewModelScope.launch {
+            _fileDownloadProgress.update { it + (message.id to 0f) }
+            chatRepository.downloadMessageFile(message) { progress ->
+                _fileDownloadProgress.update { it + (message.id to progress) }
+            }.onSuccess { file ->
+                _fileDownloadProgress.update { it - message.id }
+                onReady(file)
+            }.onFailure { err ->
+                _fileDownloadProgress.update { it - message.id }
+                _errorBanner.value = err.localizedMessage ?: "Falha ao baixar arquivo."
+            }
+        }
+    }
+
+    fun extractZipToDefault(
+        context: Context,
+        zipFile: File,
+        archiveDisplayName: String,
+        onComplete: (ZipExtractionResult) -> Unit
+    ) {
+        viewModelScope.launch {
+            _isSendingMedia.value = true
+            ZipArchiveHelper.extractZipToDefault(
+                context = context,
+                zipFile = zipFile,
+                archiveDisplayName = archiveDisplayName,
+                configuredTreeUri = defaultZipExtractUri.value
+            ).onSuccess { result ->
+                onComplete(result)
+            }.onFailure { err ->
+                _errorBanner.value = err.localizedMessage ?: "Erro ao extrair arquivo ZIP."
+            }
+            _isSendingMedia.value = false
+        }
+    }
+
+    fun extractZipToCustomUri(
+        context: Context,
+        zipFile: File,
+        archiveDisplayName: String,
+        treeUri: Uri,
+        onComplete: (ZipExtractionResult) -> Unit
+    ) {
+        viewModelScope.launch {
+            _isSendingMedia.value = true
+            ZipArchiveHelper.extractZipToTreeUri(
+                context = context,
+                zipFile = zipFile,
+                archiveDisplayName = archiveDisplayName,
+                treeUri = treeUri
+            ).onSuccess { result ->
+                onComplete(result)
+            }.onFailure { err ->
+                _errorBanner.value = err.localizedMessage ?: "Erro ao extrair arquivo ZIP na pasta escolhida."
+            }
+            _isSendingMedia.value = false
+        }
+    }
+
+    fun reportError(message: String) {
+        _errorBanner.value = message
     }
 
     fun startCall(isVideo: Boolean, onCallCreated: (callId: String, isVideo: Boolean) -> Unit) {

@@ -1,9 +1,13 @@
 package com.example.data.remote
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.provider.ContactsContract
 import com.example.R
 import com.example.data.local.LocalContactEntity
+import com.example.data.local.SettingsDataStore
 import com.example.data.local.Zap2Dao
 import com.example.data.model.ContactEntry
 import com.example.data.model.DeviceContact
@@ -20,6 +24,10 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.snapshots
+import com.google.firebase.storage.FirebaseStorage
+import com.google.firebase.storage.StorageException
+import com.google.firebase.storage.StorageMetadata
+import com.google.firebase.storage.storage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -29,17 +37,32 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.util.UUID
 
 class UserAndContactsRepository(
+    private val context: Context?,
     private val db: FirebaseFirestore,
     private val dao: Zap2Dao,
-    private val auth: FirebaseAuth = Firebase.auth
+    private val settingsStore: SettingsDataStore? = null,
+    private val auth: FirebaseAuth = Firebase.auth,
+    private val storage: FirebaseStorage = Firebase.storage
 ) {
+    constructor(db: FirebaseFirestore, dao: Zap2Dao) : this(
+        context = null,
+        db = db,
+        dao = dao,
+        settingsStore = null
+    )
+
     constructor(context: Context, dao: Zap2Dao) : this(
-        FirebaseFirestore.getInstance(
+        context = context.applicationContext,
+        db = FirebaseFirestore.getInstance(
             context.applicationContext.getString(R.string.firestore_database_id)
         ),
-        dao
+        dao = dao,
+        settingsStore = SettingsDataStore(context.applicationContext)
     )
 
     private fun requireUserId(): String =
@@ -140,7 +163,18 @@ class UserAndContactsRepository(
         emitAll(
             db.collection("users").document(uid)
                 .snapshots()
-                .map { it.toObject(UserProfile::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE) }
+                .map { snap ->
+                    val profile = snap.toObject(UserProfile::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+                    if (profile != null) {
+                        settingsStore?.saveLocalProfileCache(
+                            displayName = profile.displayName,
+                            about = profile.about,
+                            photoUrl = profile.photoUrl.orEmpty(),
+                            bannerUrl = profile.bannerUrl.orEmpty()
+                        )
+                    }
+                    profile
+                }
                 .catch { error ->
                     val firestoreError = generateSequence(error) { it.cause }
                         .filterIsInstance<FirebaseFirestoreException>()
@@ -151,6 +185,26 @@ class UserAndContactsRepository(
                         handleFirestoreError(exceptionToLog, OperationType.GET, path)
                     }
                     throw error
+                }
+        )
+    }
+
+    fun observePublicProfile(uid: String): Flow<PublicProfile?> = flow {
+        val path = "public_profiles/$uid"
+        emitAll(
+            db.collection("public_profiles").document(uid)
+                .snapshots()
+                .map { it.toObject(PublicProfile::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE) }
+                .catch { error ->
+                    val firestoreError = generateSequence(error) { it.cause }
+                        .filterIsInstance<FirebaseFirestoreException>()
+                        .firstOrNull()
+                    if (firestoreError == null && error is CancellationException) throw error
+                    val exceptionToLog = firestoreError ?: (error as? Exception)
+                    if (exceptionToLog != null && auth.currentUser != null) {
+                        handleFirestoreError(exceptionToLog, OperationType.GET, path)
+                    }
+                    emit(null)
                 }
         )
     }
@@ -195,10 +249,14 @@ class UserAndContactsRepository(
                 )
                 .await()
 
+            settingsStore?.saveLocalProfileCache(displayName = cleanName, about = cleanAbout)
+
             if (cleanPhone != null) {
                 val digits = normalizePhoneDigits(cleanPhone)
                 if (digits.length in 6..20) {
-                    upsertPhoneLookup(uid, cleanName, auth.currentUser?.photoUrl?.toString(), digits)
+                    val userSnap = db.collection("users").document(uid).get().await()
+                    val currentPhoto = userSnap.getString("photoUrl") ?: auth.currentUser?.photoUrl?.toString()
+                    upsertPhoneLookup(uid, cleanName, currentPhoto, digits)
                 }
             }
             Result.success(Unit)
@@ -207,6 +265,229 @@ class UserAndContactsRepository(
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.UPDATE, "users/$uid")
             Result.failure(e)
+        }
+    }
+
+    suspend fun updateProfileBanner(
+        bannerUrl: String? = null,
+        localImageUri: Uri? = null,
+        onProgress: (Float) -> Unit = {}
+    ): Result<String> {
+        val uid = auth.currentUser?.uid ?: return Result.failure(IllegalStateException("Não autenticado"))
+        return try {
+            val finalUrl = when {
+                localImageUri != null -> {
+                    val ctx = context ?: return Result.failure(IllegalStateException("Contexto indisponível."))
+                    val (localFile, mime) = prepareProfileMediaFile(ctx, localImageUri, "banner_$uid", isVideo = false, maxDim = 1600)
+                    uploadProfileMediaToStorage(
+                        storagePath = "users/$uid/profile/banner_${System.currentTimeMillis()}.${localFile.extension}",
+                        file = localFile,
+                        mimeType = mime,
+                        onProgress = onProgress
+                    )
+                }
+                else -> validateHttpUrlOrEmpty(bannerUrl)
+            }
+
+            db.collection("users").document(uid).update(
+                mapOf(
+                    "bannerUrl" to finalUrl,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+
+            db.collection("public_profiles").document(uid).set(
+                mapOf(
+                    "uid" to uid,
+                    "bannerUrl" to finalUrl,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                ),
+                SetOptions.merge()
+            ).await()
+
+            settingsStore?.saveLocalProfileCache(bannerUrl = finalUrl)
+            Result.success(finalUrl)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, "users/$uid")
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateProfileAvatar(
+        avatarUrl: String? = null,
+        localMediaUri: Uri? = null,
+        isVideo: Boolean = false,
+        onProgress: (Float) -> Unit = {}
+    ): Result<String> {
+        val uid = auth.currentUser?.uid ?: return Result.failure(IllegalStateException("Não autenticado"))
+        return try {
+            val finalUrl = when {
+                localMediaUri != null -> {
+                    val ctx = context ?: return Result.failure(IllegalStateException("Contexto indisponível."))
+                    val (localFile, mime) = prepareProfileMediaFile(ctx, localMediaUri, "avatar_$uid", isVideo = isVideo, maxDim = 720)
+                    uploadProfileMediaToStorage(
+                        storagePath = "users/$uid/profile/avatar_${System.currentTimeMillis()}.${localFile.extension}",
+                        file = localFile,
+                        mimeType = mime,
+                        onProgress = onProgress
+                    )
+                }
+                else -> validateHttpUrlOrEmpty(avatarUrl)
+            }
+
+            db.collection("users").document(uid).update(
+                mapOf(
+                    "photoUrl" to finalUrl,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+
+            db.collection("public_profiles").document(uid).set(
+                mapOf(
+                    "uid" to uid,
+                    "photoUrl" to finalUrl,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                ),
+                SetOptions.merge()
+            ).await()
+
+            val userSnap = db.collection("users").document(uid).get().await()
+            val name = userSnap.getString("displayName") ?: "Usuário Zap2"
+            val phone = userSnap.getString("phoneNumber").orEmpty()
+            val digits = normalizePhoneDigits(phone)
+            if (digits.length in 6..20) {
+                upsertPhoneLookup(uid, name, finalUrl.takeIf { it.isNotBlank() }, digits)
+            }
+
+            settingsStore?.saveLocalProfileCache(photoUrl = finalUrl)
+            Result.success(finalUrl)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, "users/$uid")
+            Result.failure(e)
+        }
+    }
+
+    private fun validateHttpUrlOrEmpty(raw: String?): String {
+        val trimmed = raw?.trim().orEmpty()
+        if (trimmed.isEmpty()) return ""
+        val parsed = Uri.parse(trimmed)
+        val scheme = parsed.scheme?.lowercase()
+        require(scheme == "http" || scheme == "https") {
+            "Informe uma URL válida começando com https:// ou http://"
+        }
+        require(trimmed.length <= 2048) { "A URL é muito longa (máximo 2048 caracteres)." }
+        return trimmed
+    }
+
+    private suspend fun prepareProfileMediaFile(
+        ctx: Context,
+        uri: Uri,
+        baseName: String,
+        isVideo: Boolean,
+        maxDim: Int
+    ): Pair<File, String> = withContext(Dispatchers.IO) {
+        val mediaDir = File(ctx.filesDir, "media").apply { mkdirs() }
+        val mime = ctx.contentResolver.getType(uri)?.lowercase() ?: if (isVideo) "video/mp4" else "image/jpeg"
+
+        if (isVideo || mime.startsWith("video/") || mime == "image/gif") {
+            val ext = when {
+                mime == "image/gif" -> "gif"
+                mime.contains("webm") -> "webm"
+                else -> "mp4"
+            }
+            val dest = File(mediaDir, "profile_${baseName}.$ext")
+            ctx.contentResolver.openInputStream(uri)?.use { input ->
+                dest.outputStream().use { output ->
+                    val buf = ByteArray(8192)
+                    var read: Int
+                    while (input.read(buf).also { read = it } != -1) {
+                        output.write(buf, 0, read)
+                    }
+                }
+            } ?: throw IllegalStateException("Não foi possível ler o arquivo selecionado.")
+            return@withContext dest to mime
+        }
+
+        // Static image: scale down nicely and preserve high quality
+        val rawTemp = File(ctx.cacheDir, "tmp_profile_${UUID.randomUUID()}.bin")
+        try {
+            ctx.contentResolver.openInputStream(uri)?.use { input ->
+                rawTemp.outputStream().use { output -> input.copyTo(output) }
+            } ?: throw IllegalStateException("Não foi possível ler a imagem selecionada.")
+
+            val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(rawTemp.absolutePath, boundsOpts)
+            var sampleSize = 1
+            while (boundsOpts.outWidth / sampleSize > maxDim * 2 || boundsOpts.outHeight / sampleSize > maxDim * 2) {
+                sampleSize *= 2
+            }
+            val decoded = BitmapFactory.decodeFile(
+                rawTemp.absolutePath,
+                BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            ) ?: throw IllegalStateException("Arquivo selecionado não é uma imagem válida.")
+
+            val scaled = if (decoded.width > maxDim || decoded.height > maxDim) {
+                val ratio = minOf(maxDim.toFloat() / decoded.width, maxDim.toFloat() / decoded.height)
+                Bitmap.createScaledBitmap(
+                    decoded,
+                    (decoded.width * ratio).toInt().coerceAtLeast(1),
+                    (decoded.height * ratio).toInt().coerceAtLeast(1),
+                    true
+                ).also { if (it !== decoded) decoded.recycle() }
+            } else {
+                decoded
+            }
+
+            val dest = File(mediaDir, "profile_${baseName}.jpg")
+            try {
+                ByteArrayOutputStream().use { out ->
+                    scaled.compress(Bitmap.CompressFormat.JPEG, 88, out)
+                    dest.writeBytes(out.toByteArray())
+                }
+            } finally {
+                scaled.recycle()
+            }
+            dest to "image/jpeg"
+        } finally {
+            rawTemp.delete()
+        }
+    }
+
+    private suspend fun uploadProfileMediaToStorage(
+        storagePath: String,
+        file: File,
+        mimeType: String,
+        onProgress: (Float) -> Unit
+    ): String {
+        storage.maxUploadRetryTimeMillis = 120_000L
+        val metadata = StorageMetadata.Builder()
+            .setContentType(mimeType)
+            .build()
+        val task = storage.reference.child(storagePath).putFile(Uri.fromFile(file), metadata)
+        task.addOnProgressListener { snap ->
+            val total = snap.totalByteCount
+            if (total > 0L) {
+                onProgress((snap.bytesTransferred.toFloat() / total.toFloat()).coerceIn(0f, 1f))
+            }
+        }
+        return try {
+            task.await()
+            task.snapshot.storage.downloadUrl.await().toString()
+        } catch (e: StorageException) {
+            val friendly = when (e.errorCode) {
+                StorageException.ERROR_BUCKET_NOT_FOUND,
+                StorageException.ERROR_OBJECT_NOT_FOUND ->
+                    "Firebase Storage não está ativo neste projeto. Ative o Storage no Console Firebase ou cole uma URL direta (https://...)."
+                StorageException.ERROR_NOT_AUTHORIZED,
+                StorageException.ERROR_NOT_AUTHENTICATED ->
+                    "Sem permissão para enviar ao Firebase Storage. Verifique as regras do Storage."
+                else -> "Falha no upload para o Storage: ${e.localizedMessage ?: "tente novamente."}"
+            }
+            throw IllegalStateException(friendly, e)
         }
     }
 

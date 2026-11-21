@@ -358,6 +358,7 @@ private fun Zap2AuthenticatedShell(
                                                 userRepository = container.userRepository,
                                                 callSignalingRepository = container.callSignalingRepository,
                                                 audioPlayer = container.audioRecorderPlayer,
+                                                settingsStore = container.settingsStore,
                                                 currentUserId = currentUserId
                                             )
                                         }
@@ -393,6 +394,7 @@ private fun Zap2AuthenticatedShell(
                                                 userRepository = container.userRepository,
                                                 callSignalingRepository = container.callSignalingRepository,
                                                 audioPlayer = container.audioRecorderPlayer,
+                                                settingsStore = container.settingsStore,
                                                 currentUserId = currentUserId
                                             )
                                         }

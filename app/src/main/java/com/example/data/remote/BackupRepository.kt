@@ -8,15 +8,18 @@ import com.example.data.local.SettingsDataStore
 import com.example.data.local.Zap2Database
 import com.example.data.model.BackupManifest
 import com.example.data.model.BackupSummary
+import com.example.data.model.ProfileBackupData
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.SetOptions
 import com.google.firebase.storage.FirebaseStorage
 import com.google.firebase.storage.storage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -103,6 +106,20 @@ class BackupRepository(
                     val manifestFile = File(stagingDir, "backup_manifest.json")
                     manifestFile.writeText(json.encodeToString(manifest))
 
+                    val cachedSettings = settingsStore.settingsFlow.first()
+                    val remoteSnap = runCatching { db.collection("users").document(uid).get().await() }.getOrNull()
+                    val profileBackup = ProfileBackupData(
+                        uid = uid,
+                        displayName = remoteSnap?.getString("displayName") ?: cachedSettings.cachedDisplayName,
+                        about = remoteSnap?.getString("about") ?: cachedSettings.cachedAbout,
+                        photoUrl = remoteSnap?.getString("photoUrl")
+                            ?: cachedSettings.cachedPhotoUrl.takeIf { it.isNotBlank() },
+                        bannerUrl = remoteSnap?.getString("bannerUrl")
+                            ?: cachedSettings.cachedBannerUrl.takeIf { it.isNotBlank() }
+                    )
+                    val profileBackupFile = File(stagingDir, "profile_backup.json")
+                    profileBackupFile.writeText(json.encodeToString(profileBackup))
+
                     val dbStaging = File(stagingDir, "database").apply { mkdirs() }
                     val mainDbFile = context.getDatabasePath(Zap2Database.DB_NAME)
                     if (mainDbFile.exists()) {
@@ -133,6 +150,7 @@ class BackupRepository(
                         aesKeyStrength = AesKeyStrength.KEY_STRENGTH_256
                     }
                     zipFile.addFile(manifestFile, params)
+                    zipFile.addFile(profileBackupFile, params)
                     if (dbStaging.listFiles()?.isNotEmpty() == true) {
                         zipFile.addFolder(dbStaging, params)
                     }
@@ -241,6 +259,43 @@ class BackupRepository(
                 // Re-open Room immediately to verify integrity
                 Zap2Database.getInstance(context).zap2Dao().getChatCount()
 
+                // Restore profile banner & avatar from local backup if available
+                val profileBackupFile = File(extractDir, "profile_backup.json")
+                if (profileBackupFile.exists()) {
+                    val restoredProfile = runCatching {
+                        json.decodeFromString<ProfileBackupData>(profileBackupFile.readText())
+                    }.getOrNull()
+                    val currentUid = auth.currentUser?.uid
+                    if (restoredProfile != null) {
+                        settingsStore.saveLocalProfileCache(
+                            displayName = restoredProfile.displayName,
+                            about = restoredProfile.about,
+                            photoUrl = restoredProfile.photoUrl.orEmpty(),
+                            bannerUrl = restoredProfile.bannerUrl.orEmpty()
+                        )
+                        if (currentUid != null) {
+                            val profileUpdates = mutableMapOf<String, Any>(
+                                "updatedAt" to FieldValue.serverTimestamp()
+                            )
+                            if (restoredProfile.displayName.isNotBlank()) {
+                                profileUpdates["displayName"] = restoredProfile.displayName.take(80)
+                            }
+                            if (restoredProfile.about.isNotBlank()) {
+                                profileUpdates["about"] = restoredProfile.about.take(160)
+                            }
+                            restoredProfile.photoUrl?.take(2048)?.let { profileUpdates["photoUrl"] = it }
+                            restoredProfile.bannerUrl?.take(2048)?.let { profileUpdates["bannerUrl"] = it }
+
+                            runCatching {
+                                db.collection("users").document(currentUid).update(profileUpdates).await()
+                                db.collection("public_profiles").document(currentUid)
+                                    .set(profileUpdates + mapOf("uid" to currentUid), SetOptions.merge())
+                                    .await()
+                            }
+                        }
+                    }
+                }
+
                 Result.success(manifest)
             } catch (e: CancellationException) {
                 throw e
@@ -266,13 +321,14 @@ class BackupRepository(
         val zipFile = localResult.getOrElse { return Result.failure(it) }
 
         return try {
+            storage.maxUploadRetryTimeMillis = 120_000L
             val storageRef = storage.reference.child("backups/$uid/zap2_latest_backup.zip")
             storageRef.putFile(Uri.fromFile(zipFile)).await()
             val downloadUrl = storageRef.downloadUrl.await().toString()
 
             db.collection("users").document(uid).update(
                 mapOf(
-                    "lastBackupUrl" to downloadUrl.take(1000),
+                    "lastBackupUrl" to downloadUrl.take(2048),
                     "lastBackupAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )

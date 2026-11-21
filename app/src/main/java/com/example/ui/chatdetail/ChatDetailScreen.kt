@@ -40,6 +40,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Send
+import androidx.compose.material.icons.rounded.Android
 import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.Check
@@ -47,12 +48,15 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.DeleteForever
+import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.DoneAll
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.FolderZip
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PhotoLibrary
+import androidx.compose.material.icons.rounded.PictureAsPdf
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material3.AlertDialog
@@ -100,9 +104,12 @@ import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.model.ChatMessage
 import com.example.data.model.UiState
+import com.example.data.model.ZipExtractionResult
+import com.example.service.ZipArchiveHelper
 import com.example.ui.components.TypingDotsAnimated
 import com.example.ui.components.Zap2Avatar
 import com.example.ui.components.formatClockTime
+import com.example.ui.components.formatFileSize
 import com.example.ui.theme.Zap2ExpressiveShapes
 import com.example.ui.theme.ZapOnlineGreen
 import com.example.ui.theme.ZapReadBlue
@@ -123,8 +130,12 @@ fun ChatDetailScreen(
     val messagesState by viewModel.messagesState.collectAsStateWithLifecycle()
     val typingUsers by viewModel.typingUsers.collectAsStateWithLifecycle()
     val peerProfile by viewModel.peerProfile.collectAsStateWithLifecycle()
+    val participantProfiles by viewModel.participantProfiles.collectAsStateWithLifecycle()
     val draftText by viewModel.draftText.collectAsStateWithLifecycle()
     val isSendingMedia by viewModel.isSendingMedia.collectAsStateWithLifecycle()
+    val uploadProgress by viewModel.uploadProgress.collectAsStateWithLifecycle()
+    val fileDownloadProgress by viewModel.fileDownloadProgress.collectAsStateWithLifecycle()
+    val defaultZipExtractUri by viewModel.defaultZipExtractUri.collectAsStateWithLifecycle()
     val errorBanner by viewModel.errorBanner.collectAsStateWithLifecycle()
     val editingMessage by viewModel.editingMessage.collectAsStateWithLifecycle()
 
@@ -139,6 +150,13 @@ fun ChatDetailScreen(
     var selectedMessageForActions by remember { mutableStateOf<ChatMessage?>(null) }
     var deleteConfirmMessage by remember { mutableStateOf<ChatMessage?>(null) }
     var activeVideoFile by remember { mutableStateOf<File?>(null) }
+    var activePdfPreview by remember { mutableStateOf<Pair<File, String>?>(null) }
+    var pendingApkInstallFile by remember { mutableStateOf<File?>(null) }
+    var showApkPermissionDialog by remember { mutableStateOf(false) }
+    var activeZipPrompt by remember { mutableStateOf<Pair<File, String>?>(null) }
+    var zipPromptStep by remember { mutableStateOf(ZipPromptStep.INITIAL) }
+    var pendingZipForCustomTree by remember { mutableStateOf<Pair<File, String>?>(null) }
+    var zipExtractionDoneResult by remember { mutableStateOf<ZipExtractionResult?>(null) }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -153,6 +171,50 @@ fun ChatDetailScreen(
     ) { uri ->
         if (uri != null) {
             viewModel.sendVideo(uri)
+        }
+    }
+
+    val documentPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.sendDocument(uri)
+        }
+    }
+
+    val zipTreePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { treeUri ->
+        val pending = pendingZipForCustomTree
+        pendingZipForCustomTree = null
+        if (treeUri != null && pending != null) {
+            viewModel.extractZipToCustomUri(
+                context = context,
+                zipFile = pending.first,
+                archiveDisplayName = pending.second,
+                treeUri = treeUri
+            ) { result ->
+                zipExtractionDoneResult = result
+            }
+        } else if (pending != null) {
+            Toast.makeText(context, "Seleção de pasta cancelada.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val unknownSourcesLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        val pendingApk = pendingApkInstallFile
+        if (pendingApk != null) {
+            pendingApkInstallFile = null
+            launchApkInstall(
+                context = context,
+                apkFile = pendingApk,
+                onNeedPermission = {
+                    viewModel.reportError("Permissão de fontes desconhecidas ainda não concedida.")
+                },
+                onError = { err -> viewModel.reportError(err) }
+            )
         }
     }
 
@@ -331,7 +393,46 @@ fun ChatDetailScreen(
                     .navigationBarsPadding()
                     .imePadding()
             ) {
-                if (isSendingMedia) {
+                val activeUpload = uploadProgress
+                if (activeUpload != null) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("upload_progress_banner")
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Enviando ${activeUpload.fileName}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    text = "${(activeUpload.progress * 100).toInt()}% • ${formatFileSize(activeUpload.bytesTransferred)} / ${formatFileSize(activeUpload.totalBytes)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            LinearProgressIndicator(
+                                progress = { activeUpload.progress },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                } else if (isSendingMedia) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
                 if (errorBanner != null) {
@@ -384,6 +485,22 @@ fun ChatDetailScreen(
                             videoPickerLauncher.launch(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
                             )
+                        },
+                        onPickPdf = {
+                            documentPickerLauncher.launch(arrayOf("application/pdf"))
+                        },
+                        onPickApk = {
+                            documentPickerLauncher.launch(
+                                arrayOf("application/vnd.android.package-archive", "application/octet-stream", "*/*")
+                            )
+                        },
+                        onPickZip = {
+                            documentPickerLauncher.launch(
+                                arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream", "*/*")
+                            )
+                        },
+                        onPickGenericFile = {
+                            documentPickerLauncher.launch(arrayOf("*/*"))
                         },
                         onStartVoiceRecord = {
                             val granted = ContextCompat.checkSelfPermission(
@@ -450,13 +567,18 @@ fun ChatDetailScreen(
                                     animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
                                 )
                             ) {
+                                val senderPhoto = participantProfiles[msg.senderId]?.photoUrl
+                                    ?: if (!isGroup && msg.senderId != viewModel.currentUserId) peerProfile?.photoUrl else null
+
                                 MessageBubbleRow(
                                     message = msg,
                                     isMine = msg.senderId == viewModel.currentUserId,
                                     isGroup = isGroup,
                                     isFirstInGroup = isFirstInGroup,
+                                    senderPhotoUrl = senderPhoto,
                                     isPlayingAudio = playingMessageId == msg.id,
                                     audioProgress = if (playingMessageId == msg.id) playbackProgress else 0f,
+                                    downloadProgress = fileDownloadProgress[msg.id],
                                     onToggleAudio = {
                                         val source = msg.localMediaPath?.takeIf { File(it).exists() } ?: msg.mediaUrl
                                         if (!source.isNullOrBlank()) {
@@ -464,6 +586,47 @@ fun ChatDetailScreen(
                                         }
                                     },
                                     onPlayVideo = { file -> activeVideoFile = file },
+                                    onOpenFilePrimary = { clickedMsg ->
+                                        viewModel.downloadAndPrepareFile(clickedMsg) { localFile ->
+                                            val displayName = clickedMsg.fileName?.ifBlank { localFile.name } ?: localFile.name
+                                            when (clickedMsg.messageType) {
+                                                "PDF" -> activePdfPreview = localFile to displayName
+                                                "APK" -> {
+                                                    launchApkInstall(
+                                                        context = context,
+                                                        apkFile = localFile,
+                                                        onNeedPermission = {
+                                                            pendingApkInstallFile = localFile
+                                                            showApkPermissionDialog = true
+                                                        },
+                                                        onError = { err -> viewModel.reportError(err) }
+                                                    )
+                                                }
+                                                "ZIP" -> {
+                                                    activeZipPrompt = localFile to displayName
+                                                    zipPromptStep = ZipPromptStep.INITIAL
+                                                }
+                                                else -> {
+                                                    openLocalFileWithFileProvider(
+                                                        context = context,
+                                                        file = localFile,
+                                                        mimeType = clickedMsg.mimeType ?: "*/*",
+                                                        onError = { err -> viewModel.reportError(err) }
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    },
+                                    onOpenFileExternal = { clickedMsg ->
+                                        viewModel.downloadAndPrepareFile(clickedMsg) { localFile ->
+                                            openLocalFileWithFileProvider(
+                                                context = context,
+                                                file = localFile,
+                                                mimeType = clickedMsg.mimeType ?: "application/pdf",
+                                                onError = { err -> viewModel.reportError(err) }
+                                            )
+                                        }
+                                    },
                                     onOpenUrl = { url ->
                                         runCatching { uriHandler.openUri(url) }
                                     },
@@ -562,6 +725,105 @@ fun ChatDetailScreen(
         VideoPlayerDialog(
             videoFile = playingVideo,
             onDismiss = { activeVideoFile = null }
+        )
+    }
+
+    val pdfPair = activePdfPreview
+    if (pdfPair != null) {
+        InAppPdfViewerDialog(
+            pdfFile = pdfPair.first,
+            displayName = pdfPair.second,
+            onOpenExternal = { file ->
+                openLocalFileWithFileProvider(
+                    context = context,
+                    file = file,
+                    mimeType = "application/pdf",
+                    onError = { err -> viewModel.reportError(err) }
+                )
+            },
+            onDismiss = { activePdfPreview = null }
+        )
+    }
+
+    if (showApkPermissionDialog) {
+        ApkInstallPermissionDialog(
+            onOpenSettings = {
+                showApkPermissionDialog = false
+                unknownSourcesLauncher.launch(buildManageUnknownAppSourcesIntent(context))
+            },
+            onDismiss = {
+                showApkPermissionDialog = false
+                pendingApkInstallFile = null
+            }
+        )
+    }
+
+    val zipPair = activeZipPrompt
+    if (zipPair != null) {
+        ZipExtractionDialogs(
+            step = zipPromptStep,
+            archiveName = zipPair.second,
+            defaultPathSummary = remember(defaultZipExtractUri) {
+                ZipArchiveHelper.formatDefaultExtractSummary(context, defaultZipExtractUri)
+            },
+            onYesDefault = {
+                activeZipPrompt = null
+                viewModel.extractZipToDefault(
+                    context = context,
+                    zipFile = zipPair.first,
+                    archiveDisplayName = zipPair.second
+                ) { result ->
+                    zipExtractionDoneResult = result
+                }
+            },
+            onChooseCustomPath = {
+                activeZipPrompt = null
+                pendingZipForCustomTree = zipPair
+                zipTreePickerLauncher.launch(null)
+            },
+            onNoFirstPrompt = {
+                zipPromptStep = ZipPromptStep.CONFIRM_CANCEL
+            },
+            onConfirmYesAfterNo = {
+                activeZipPrompt = null
+                viewModel.extractZipToDefault(
+                    context = context,
+                    zipFile = zipPair.first,
+                    archiveDisplayName = zipPair.second
+                ) { result ->
+                    zipExtractionDoneResult = result
+                }
+            },
+            onConfirmNoCancel = {
+                activeZipPrompt = null
+                Toast.makeText(context, "Extração do ZIP cancelada.", Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+
+    val doneZip = zipExtractionDoneResult
+    if (doneZip != null) {
+        AlertDialog(
+            onDismissRequest = { zipExtractionDoneResult = null },
+            icon = {
+                Icon(
+                    imageVector = Icons.Rounded.FolderZip,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            },
+            title = { Text("ZIP extraído com sucesso") },
+            text = {
+                Text(
+                    text = "${doneZip.extractedFilesCount} arquivo(s) extraído(s) para:\n${doneZip.destinationPath ?: doneZip.destinationLabel}",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { zipExtractionDoneResult = null }) {
+                    Text("OK")
+                }
+            }
         )
     }
 }
@@ -794,10 +1056,14 @@ private fun MessageBubbleRow(
     isMine: Boolean,
     isGroup: Boolean,
     isFirstInGroup: Boolean,
+    senderPhotoUrl: String?,
     isPlayingAudio: Boolean,
     audioProgress: Float,
+    downloadProgress: Float?,
     onToggleAudio: () -> Unit,
     onPlayVideo: (File) -> Unit,
+    onOpenFilePrimary: (ChatMessage) -> Unit,
+    onOpenFileExternal: (ChatMessage) -> Unit,
     onOpenUrl: (String) -> Unit,
     onLongClick: () -> Unit
 ) {
@@ -853,8 +1119,21 @@ private fun MessageBubbleRow(
         modifier = Modifier
             .fillMaxWidth()
             .padding(top = if (isFirstInGroup) 6.dp else 1.dp),
-        horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start
+        horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.Bottom
     ) {
+        if (!isMine) {
+            if (isFirstInGroup) {
+                Zap2Avatar(
+                    name = message.senderName.ifBlank { "Zap2" },
+                    photoUrl = senderPhotoUrl,
+                    size = 30.dp,
+                    modifier = Modifier.padding(end = 6.dp)
+                )
+            } else {
+                Spacer(modifier = Modifier.width(36.dp))
+            }
+        }
         Surface(
             shape = bubbleShape,
             color = bubbleColor,
@@ -964,6 +1243,24 @@ private fun MessageBubbleRow(
                             }
                         }
                     }
+                    "PDF", "APK", "ZIP", "FILE" -> {
+                        FileAttachmentMessageCard(
+                            message = message,
+                            downloadProgress = downloadProgress,
+                            onPrimaryAction = { onOpenFilePrimary(message) },
+                            onSecondaryAction = if (message.messageType == "PDF") {
+                                { onOpenFileExternal(message) }
+                            } else {
+                                null
+                            }
+                        )
+                        if (annotatedBody != null) {
+                            Text(
+                                text = annotatedBody,
+                                style = MaterialTheme.typography.bodyLarge.copy(color = textColor)
+                            )
+                        }
+                    }
                     else -> {
                         if (annotatedBody != null) {
                             Text(
@@ -1021,6 +1318,10 @@ private fun MessageComposerBar(
     onTextChange: (String) -> Unit,
     onPickImage: () -> Unit,
     onPickVideo: () -> Unit,
+    onPickPdf: () -> Unit,
+    onPickApk: () -> Unit,
+    onPickZip: () -> Unit,
+    onPickGenericFile: () -> Unit,
     onStartVoiceRecord: () -> Unit,
     onSendText: () -> Unit
 ) {
@@ -1049,7 +1350,7 @@ private fun MessageComposerBar(
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.AttachFile,
-                            contentDescription = "Enviar foto ou vídeo",
+                            contentDescription = "Anexar foto, vídeo ou arquivo",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -1069,7 +1370,7 @@ private fun MessageComposerBar(
                             modifier = Modifier.testTag("pick_photo_menu_item")
                         )
                         DropdownMenuItem(
-                            text = { Text("Vídeo (até 540 KB grátis)") },
+                            text = { Text("Vídeo") },
                             leadingIcon = {
                                 Icon(Icons.Rounded.Videocam, contentDescription = null)
                             },
@@ -1078,6 +1379,50 @@ private fun MessageComposerBar(
                                 onPickVideo()
                             },
                             modifier = Modifier.testTag("pick_video_menu_item")
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Documento PDF") },
+                            leadingIcon = {
+                                Icon(Icons.Rounded.PictureAsPdf, contentDescription = null)
+                            },
+                            onClick = {
+                                showAttachMenu = false
+                                onPickPdf()
+                            },
+                            modifier = Modifier.testTag("pick_pdf_menu_item")
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Aplicativo APK") },
+                            leadingIcon = {
+                                Icon(Icons.Rounded.Android, contentDescription = null)
+                            },
+                            onClick = {
+                                showAttachMenu = false
+                                onPickApk()
+                            },
+                            modifier = Modifier.testTag("pick_apk_menu_item")
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Arquivo ZIP") },
+                            leadingIcon = {
+                                Icon(Icons.Rounded.FolderZip, contentDescription = null)
+                            },
+                            onClick = {
+                                showAttachMenu = false
+                                onPickZip()
+                            },
+                            modifier = Modifier.testTag("pick_zip_menu_item")
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Outro arquivo") },
+                            leadingIcon = {
+                                Icon(Icons.Rounded.Description, contentDescription = null)
+                            },
+                            onClick = {
+                                showAttachMenu = false
+                                onPickGenericFile()
+                            },
+                            modifier = Modifier.testTag("pick_generic_file_menu_item")
                         )
                     }
                 }

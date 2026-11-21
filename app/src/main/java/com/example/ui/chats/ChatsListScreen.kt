@@ -24,11 +24,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AddComment
+import androidx.compose.material.icons.rounded.Android
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.FolderZip
 import androidx.compose.material.icons.rounded.GroupAdd
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.PictureAsPdf
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material3.Button
@@ -80,6 +84,7 @@ fun ChatsListScreen(
     val contacts by viewModel.savedContacts.collectAsStateWithLifecycle()
     val actionMessage by viewModel.actionMessage.collectAsStateWithLifecycle()
     val myProfile by viewModel.myProfile.collectAsStateWithLifecycle()
+    val peerProfiles by viewModel.peerProfiles.collectAsStateWithLifecycle()
 
     var showCreateGroup by remember { mutableStateOf(false) }
 
@@ -245,9 +250,12 @@ fun ChatsListScreen(
                                         animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
                                     )
                                 ) {
+                                    val peerProfile = chat.peerUidForDirect(viewModel.currentUserId)?.let { peerProfiles[it] }
                                     ChatListCard(
                                         chat = chat,
                                         currentUserId = viewModel.currentUserId,
+                                        peerPhotoUrl = peerProfile?.photoUrl,
+                                        peerOnline = peerProfile?.online == true,
                                         onClick = { onOpenChat(chat.id) }
                                     )
                                 }
@@ -329,10 +337,13 @@ private fun FilledGroupShortcut(onClick: () -> Unit) {
 private fun ChatListCard(
     chat: ChatRoom,
     currentUserId: String,
+    peerPhotoUrl: String? = null,
+    peerOnline: Boolean = false,
     onClick: () -> Unit
 ) {
     val displayTitle = chat.resolveDisplayTitle(currentUserId)
     val isGroup = chat.chatType == "GROUP"
+    val avatarUrl = if (isGroup) chat.groupPhotoUrl else peerPhotoUrl
 
     Card(
         modifier = Modifier
@@ -355,8 +366,9 @@ private fun ChatListCard(
         ) {
             Zap2Avatar(
                 name = displayTitle,
-                photoUrl = chat.groupPhotoUrl,
+                photoUrl = avatarUrl,
                 isGroup = isGroup,
+                online = !isGroup && peerOnline,
                 size = 54.dp
             )
 
@@ -402,6 +414,30 @@ private fun ChatListCard(
                         )
                         "AUDIO" -> Icon(
                             Icons.Rounded.Mic,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        "PDF" -> Icon(
+                            Icons.Rounded.PictureAsPdf,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                        "APK" -> Icon(
+                            Icons.Rounded.Android,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.tertiary
+                        )
+                        "ZIP" -> Icon(
+                            Icons.Rounded.FolderZip,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.secondary
+                        )
+                        "FILE" -> Icon(
+                            Icons.Rounded.Description,
                             contentDescription = null,
                             modifier = Modifier.size(16.dp),
                             tint = MaterialTheme.colorScheme.primary

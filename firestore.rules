@@ -53,10 +53,11 @@ service cloud.firestore {
              (!('phoneNumber' in data) || (data.phoneNumber is string && data.phoneNumber.size() <= 32)) &&
              (!('phoneVerified' in data) || data.phoneVerified is bool) &&
              (!('email' in data) || (data.email is string && data.email.size() <= 160)) &&
-             (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 1000)) &&
+             (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 2048)) &&
+             (!('bannerUrl' in data) || (data.bannerUrl is string && data.bannerUrl.size() <= 2048)) &&
              (!('fcmToken' in data) || (data.fcmToken is string && data.fcmToken.size() <= 500)) &&
              (!('lastSeen' in data) || isValidTimestamp(data.lastSeen)) &&
-             (!('lastBackupUrl' in data) || (data.lastBackupUrl is string && data.lastBackupUrl.size() <= 1000)) &&
+             (!('lastBackupUrl' in data) || (data.lastBackupUrl is string && data.lastBackupUrl.size() <= 2048)) &&
              (!('lastBackupAt' in data) || isValidTimestamp(data.lastBackupAt));
     }
 
@@ -66,7 +67,8 @@ service cloud.firestore {
              data.online is bool &&
              isValidTimestamp(data.updatedAt) &&
              (!('about' in data) || (data.about is string && data.about.size() <= 160)) &&
-             (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 1000)) &&
+             (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 2048)) &&
+             (!('bannerUrl' in data) || (data.bannerUrl is string && data.bannerUrl.size() <= 2048)) &&
              (!('lastSeen' in data) || isValidTimestamp(data.lastSeen));
     }
 
@@ -74,7 +76,7 @@ service cloud.firestore {
       return data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
              data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
              isValidTimestamp(data.updatedAt) &&
-             (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 1000));
+             (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 2048));
     }
 
     function isValidContact(data) {
@@ -84,7 +86,7 @@ service cloud.firestore {
              isValidTimestamp(data.createdAt) &&
              isValidTimestamp(data.updatedAt) &&
              (!('phoneNumber' in data) || (data.phoneNumber is string && data.phoneNumber.size() <= 32)) &&
-             (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 1000));
+             (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 2048));
     }
 
     function isValidChat(data) {
@@ -94,13 +96,13 @@ service cloud.firestore {
              isValidStringList(data.participantUids, 1, 50) &&
              isValidStringList(data.adminUids, 1, 50) &&
              data.lastMessageText is string && data.lastMessageText.size() <= 500 &&
-             data.lastMessageType in ['TEXT', 'IMAGE', 'VIDEO', 'AUDIO', 'SYSTEM'] &&
+             data.lastMessageType in ['TEXT', 'IMAGE', 'VIDEO', 'AUDIO', 'PDF', 'APK', 'ZIP', 'FILE', 'SYSTEM'] &&
              data.lastMessageSenderId is string && data.lastMessageSenderId.size() <= 128 &&
              isValidTimestamp(data.lastMessageAt) &&
              isValidTimestamp(data.createdAt) &&
              isValidTimestamp(data.updatedAt) &&
              (!('description' in data) || (data.description is string && data.description.size() <= 300)) &&
-             (!('groupPhotoUrl' in data) || (data.groupPhotoUrl is string && data.groupPhotoUrl.size() <= 1000)) &&
+             (!('groupPhotoUrl' in data) || (data.groupPhotoUrl is string && data.groupPhotoUrl.size() <= 2048)) &&
              (!('participantNames' in data) || (data.participantNames is map && data.participantNames.keys().size() <= 50));
     }
 
@@ -109,13 +111,16 @@ service cloud.firestore {
              data.senderId is string && data.senderId.size() >= 1 && data.senderId.size() <= 128 &&
              data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80 &&
              isValidStringList(data.participantUids, 1, 50) &&
-             data.messageType in ['TEXT', 'IMAGE', 'VIDEO', 'AUDIO', 'SYSTEM'] &&
+             data.messageType in ['TEXT', 'IMAGE', 'VIDEO', 'AUDIO', 'PDF', 'APK', 'ZIP', 'FILE', 'SYSTEM'] &&
              data.text is string && data.text.size() <= 4000 &&
              isValidTimestamp(data.createdAt) &&
              isValidTimestamp(data.updatedAt) &&
              (!('mediaUrl' in data) || (data.mediaUrl is string && data.mediaUrl.size() <= 800000)) &&
              (!('localMediaPath' in data) || (data.localMediaPath is string && data.localMediaPath.size() <= 500)) &&
              (!('mediaDurationMs' in data) || (data.mediaDurationMs is int && data.mediaDurationMs >= 0)) &&
+             (!('fileName' in data) || (data.fileName is string && data.fileName.size() <= 255)) &&
+             (!('fileSizeBytes' in data) || (data.fileSizeBytes is int && data.fileSizeBytes >= 0)) &&
+             (!('mimeType' in data) || (data.mimeType is string && data.mimeType.size() <= 128)) &&
              (!('deliveredTo' in data) || isValidStringList(data.deliveredTo, 0, 50)) &&
              (!('readBy' in data) || isValidStringList(data.readBy, 0, 50)) &&
              (!('edited' in data) || data.edited is bool) &&
@@ -166,7 +171,7 @@ service cloud.firestore {
                        incoming().keys().hasAll(['uid', 'displayName', 'online', 'createdAt', 'updatedAt']) &&
                        incoming().keys().hasOnly([
                          'uid', 'displayName', 'about', 'phoneNumber', 'phoneVerified',
-                         'email', 'photoUrl', 'fcmToken', 'online', 'lastSeen',
+                         'email', 'photoUrl', 'bannerUrl', 'fcmToken', 'online', 'lastSeen',
                          'lastBackupUrl', 'lastBackupAt', 'createdAt', 'updatedAt'
                        ]) &&
                        isValidUserPrivate(incoming());
@@ -177,7 +182,7 @@ service cloud.firestore {
                        isValidUserPrivate(incoming()) &&
                        incoming().diff(existing()).affectedKeys().hasOnly([
                          'displayName', 'about', 'phoneNumber', 'phoneVerified',
-                         'email', 'photoUrl', 'fcmToken', 'online', 'lastSeen',
+                         'email', 'photoUrl', 'bannerUrl', 'fcmToken', 'online', 'lastSeen',
                          'lastBackupUrl', 'lastBackupAt', 'updatedAt'
                        ]);
       allow delete: if isOwner(userId) && isValidId(userId);
@@ -212,14 +217,14 @@ service cloud.firestore {
                        isValidId(userId) &&
                        incoming().uid == request.auth.uid &&
                        incoming().keys().hasAll(['uid', 'displayName', 'online', 'updatedAt']) &&
-                       incoming().keys().hasOnly(['uid', 'displayName', 'about', 'photoUrl', 'online', 'lastSeen', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['uid', 'displayName', 'about', 'photoUrl', 'bannerUrl', 'online', 'lastSeen', 'updatedAt']) &&
                        isValidPublicProfile(incoming());
       allow update: if isOwner(userId) &&
                        isValidId(userId) &&
                        incoming().uid == existing().uid &&
                        isValidPublicProfile(incoming()) &&
                        incoming().diff(existing()).affectedKeys().hasOnly([
-                         'displayName', 'about', 'photoUrl', 'online', 'lastSeen', 'updatedAt'
+                         'displayName', 'about', 'photoUrl', 'bannerUrl', 'online', 'lastSeen', 'updatedAt'
                        ]);
       allow delete: if isOwner(userId) && isValidId(userId);
     }
@@ -311,7 +316,8 @@ service cloud.firestore {
                          incoming().keys().hasOnly([
                            'chatId', 'senderId', 'senderName', 'participantUids',
                            'messageType', 'text', 'mediaUrl', 'localMediaPath',
-                           'mediaDurationMs', 'deliveredTo', 'readBy',
+                           'mediaDurationMs', 'fileName', 'fileSizeBytes', 'mimeType',
+                           'deliveredTo', 'readBy',
                            'edited', 'editedAt', 'deletedFor', 'createdAt', 'updatedAt'
                          ]) &&
                          isValidMessage(incoming()) &&

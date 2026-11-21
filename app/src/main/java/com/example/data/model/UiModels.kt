@@ -42,3 +42,25 @@ data class BackupSummary(
     val createdAtMs: Long,
     val isCloud: Boolean = false
 )
+
+@Serializable
+data class ProfileBackupData(
+    val uid: String = "",
+    val displayName: String = "",
+    val about: String = "",
+    val photoUrl: String? = null,
+    val bannerUrl: String? = null
+)
+
+data class UploadProgressState(
+    val fileName: String,
+    val bytesTransferred: Long,
+    val totalBytes: Long,
+    val progress: Float
+)
+
+data class ZipExtractionResult(
+    val extractedFilesCount: Int,
+    val destinationLabel: String,
+    val destinationPath: String? = null
+)
