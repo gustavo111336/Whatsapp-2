@@ -123,6 +123,47 @@ class AuthRepository(
         }
     }
 
+    suspend fun sendFirebaseEmailVerification(): Result<Unit> {
+        val user = auth.currentUser
+            ?: return Result.failure(IllegalStateException("Entre com sua conta Google primeiro."))
+        return try {
+            user.sendEmailVerification().await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun reloadCurrentUserEmailVerified(): Result<Boolean> {
+        val user = auth.currentUser
+            ?: return Result.failure(IllegalStateException("Entre com sua conta Google primeiro."))
+        return try {
+            user.reload().await()
+            Result.success(auth.currentUser?.isEmailVerified == true)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun sendRecoveryEmail(email: String): Result<Unit> {
+        val cleanEmail = email.trim().lowercase()
+        if (!EMAIL_REGEX.matches(cleanEmail)) {
+            return Result.failure(IllegalArgumentException("Digite um endereço de e-mail válido."))
+        }
+        return try {
+            auth.sendPasswordResetEmail(cleanEmail).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun signOut(context: Context) {
         val credentialManager = CredentialManager.create(context.applicationContext)
         withContext(NonCancellable) {
@@ -138,5 +179,6 @@ class AuthRepository(
 
     private companion object {
         const val TAG = "AuthRepository"
+        val EMAIL_REGEX = Regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$")
     }
 }

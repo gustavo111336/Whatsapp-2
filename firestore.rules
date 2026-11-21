@@ -65,6 +65,10 @@ service cloud.firestore {
              (!('phoneNumber' in data) || (data.phoneNumber is string && data.phoneNumber.size() <= 32)) &&
              (!('phoneVerified' in data) || data.phoneVerified is bool) &&
              (!('email' in data) || (data.email is string && data.email.size() <= 160)) &&
+             (!('emailVerificationEnabled' in data) || data.emailVerificationEnabled is bool) &&
+             (!('emailCodeVerified' in data) || data.emailCodeVerified is bool) &&
+             (!('recoveryEmail' in data) || isValidEmailKey(data.recoveryEmail)) &&
+             (!('recoveryEmailVerified' in data) || data.recoveryEmailVerified is bool) &&
              (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 2048)) &&
              (!('bannerUrl' in data) || (data.bannerUrl is string && data.bannerUrl.size() <= 2048)) &&
              (!('fcmToken' in data) || (data.fcmToken is string && data.fcmToken.size() <= 500)) &&
@@ -226,7 +230,9 @@ service cloud.firestore {
                        incoming().keys().hasAll(['uid', 'displayName', 'online', 'createdAt', 'updatedAt']) &&
                        incoming().keys().hasOnly([
                          'uid', 'username', 'displayName', 'about', 'phoneNumber', 'phoneVerified',
-                         'email', 'photoUrl', 'bannerUrl', 'fcmToken', 'online', 'lastSeen',
+                         'email', 'emailVerificationEnabled', 'emailCodeVerified',
+                         'recoveryEmail', 'recoveryEmailVerified',
+                         'photoUrl', 'bannerUrl', 'fcmToken', 'online', 'lastSeen',
                          'lastBackupUrl', 'lastBackupAt', 'createdAt', 'updatedAt'
                        ]) &&
                        isValidUserPrivate(incoming());
@@ -238,7 +244,9 @@ service cloud.firestore {
                        isValidUserPrivate(incoming()) &&
                        incoming().diff(existing()).affectedKeys().hasOnly([
                          'username', 'displayName', 'about', 'phoneNumber', 'phoneVerified',
-                         'email', 'photoUrl', 'bannerUrl', 'fcmToken', 'online', 'lastSeen',
+                         'email', 'emailVerificationEnabled', 'emailCodeVerified',
+                         'recoveryEmail', 'recoveryEmailVerified',
+                         'photoUrl', 'bannerUrl', 'fcmToken', 'online', 'lastSeen',
                          'lastBackupUrl', 'lastBackupAt', 'updatedAt'
                        ]);
       allow delete: if isOwner(userId) && isValidId(userId);

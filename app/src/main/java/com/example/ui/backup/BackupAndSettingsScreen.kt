@@ -127,6 +127,8 @@ fun BackupAndSettingsScreen(
     val mediaUploadProgress by viewModel.mediaUploadProgress.collectAsStateWithLifecycle()
     val usernameAvailability by viewModel.usernameAvailability.collectAsStateWithLifecycle()
     val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
+    val activeVerificationChallenge by viewModel.activeVerificationChallenge.collectAsStateWithLifecycle()
+    val firebaseEmailVerified by viewModel.firebaseEmailVerified.collectAsStateWithLifecycle()
 
     val effectiveBannerUrl = myProfile?.bannerUrl?.takeIf { it.isNotBlank() }
         ?: settings.cachedBannerUrl.takeIf { it.isNotBlank() }
@@ -577,6 +579,28 @@ fun BackupAndSettingsScreen(
                         }
                     }
                 }
+            }
+
+            // Email Verification (Toggleable + 6-char Alphanumeric Code) & Recovery Email Card
+            item {
+                EmailSecurityCard(
+                    primaryEmail = myProfile?.email,
+                    verificationEnabled = myProfile?.emailVerificationEnabled ?: settings.emailVerificationEnabled,
+                    primaryCodeVerified = myProfile?.emailCodeVerified ?: settings.emailCodeVerified,
+                    firebaseEmailVerified = firebaseEmailVerified,
+                    recoveryEmail = myProfile?.recoveryEmail ?: settings.recoveryEmail,
+                    recoveryEmailVerified = myProfile?.recoveryEmailVerified ?: settings.recoveryEmailVerified,
+                    activeChallenge = activeVerificationChallenge,
+                    isBusy = isBusy,
+                    onToggleVerification = viewModel::setEmailVerificationEnabled,
+                    onGeneratePrimaryCode = viewModel::generatePrimaryEmailCode,
+                    onGenerateRecoveryCode = viewModel::generateRecoveryEmailCode,
+                    onSubmitCode = viewModel::submitEmailVerificationCode,
+                    onSaveRecoveryEmail = viewModel::saveRecoveryEmail,
+                    onSendFirebaseVerification = viewModel::sendFirebaseVerificationLink,
+                    onRefreshFirebaseStatus = viewModel::refreshFirebaseVerificationStatus,
+                    onSendRecoveryLink = viewModel::sendAccountRecoveryEmail
+                )
             }
 
             // Encrypted Local & Cloud Backup Card

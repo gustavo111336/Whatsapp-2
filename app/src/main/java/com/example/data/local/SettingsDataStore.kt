@@ -53,7 +53,12 @@ data class UserSettings(
     val aiApiKey: String = "",
     val aiModel: String = DEFAULT_AI_MODEL,
     val aiProvider: String = AI_PROVIDER_AUTO,
-    val aiCustomBaseUrl: String = ""
+    val aiCustomBaseUrl: String = "",
+    val emailStateUid: String = "",
+    val emailVerificationEnabled: Boolean = true,
+    val emailCodeVerified: Boolean = false,
+    val recoveryEmail: String = "",
+    val recoveryEmailVerified: Boolean = false
 )
 
 class SettingsDataStore(private val context: Context) {
@@ -87,6 +92,11 @@ class SettingsDataStore(private val context: Context) {
         val AI_MODEL = stringPreferencesKey("ai_model")
         val AI_PROVIDER = stringPreferencesKey("ai_provider")
         val AI_CUSTOM_BASE_URL = stringPreferencesKey("ai_custom_base_url")
+        val EMAIL_STATE_UID = stringPreferencesKey("email_state_uid")
+        val EMAIL_VERIFICATION_ENABLED = booleanPreferencesKey("email_verification_enabled")
+        val EMAIL_CODE_VERIFIED = booleanPreferencesKey("email_code_verified")
+        val RECOVERY_EMAIL = stringPreferencesKey("recovery_email")
+        val RECOVERY_EMAIL_VERIFIED = booleanPreferencesKey("recovery_email_verified")
     }
 
     val settingsFlow: Flow<UserSettings> = context.dataStore.data.map { prefs ->
@@ -121,7 +131,12 @@ class SettingsDataStore(private val context: Context) {
             aiApiKey = prefs[Keys.AI_API_KEY] ?: "",
             aiModel = (prefs[Keys.AI_MODEL] ?: DEFAULT_AI_MODEL).ifBlank { DEFAULT_AI_MODEL },
             aiProvider = (prefs[Keys.AI_PROVIDER] ?: AI_PROVIDER_AUTO).ifBlank { AI_PROVIDER_AUTO },
-            aiCustomBaseUrl = prefs[Keys.AI_CUSTOM_BASE_URL] ?: ""
+            aiCustomBaseUrl = prefs[Keys.AI_CUSTOM_BASE_URL] ?: "",
+            emailStateUid = prefs[Keys.EMAIL_STATE_UID] ?: "",
+            emailVerificationEnabled = prefs[Keys.EMAIL_VERIFICATION_ENABLED] ?: true,
+            emailCodeVerified = prefs[Keys.EMAIL_CODE_VERIFIED] ?: false,
+            recoveryEmail = prefs[Keys.RECOVERY_EMAIL] ?: "",
+            recoveryEmailVerified = prefs[Keys.RECOVERY_EMAIL_VERIFIED] ?: false
         )
     }
 
@@ -249,6 +264,30 @@ class SettingsDataStore(private val context: Context) {
         val cleanModel = model.trim().trim('*', '`', '"', '\'').ifBlank { DEFAULT_AI_MODEL }
         context.dataStore.edit { prefs ->
             prefs[Keys.AI_MODEL] = cleanModel
+        }
+    }
+
+    suspend fun saveEmailSecurityState(
+        uid: String,
+        verificationEnabled: Boolean? = null,
+        codeVerified: Boolean? = null,
+        recoveryEmail: String? = null,
+        recoveryEmailVerified: Boolean? = null
+    ) {
+        context.dataStore.edit { prefs ->
+            if (uid.isNotBlank() && prefs[Keys.EMAIL_STATE_UID] != uid) {
+                prefs[Keys.EMAIL_STATE_UID] = uid
+                prefs[Keys.EMAIL_VERIFICATION_ENABLED] = verificationEnabled ?: true
+                prefs[Keys.EMAIL_CODE_VERIFIED] = codeVerified ?: false
+                prefs[Keys.RECOVERY_EMAIL] = recoveryEmail?.trim().orEmpty()
+                prefs[Keys.RECOVERY_EMAIL_VERIFIED] = recoveryEmailVerified ?: false
+            } else {
+                if (uid.isNotBlank()) prefs[Keys.EMAIL_STATE_UID] = uid
+                if (verificationEnabled != null) prefs[Keys.EMAIL_VERIFICATION_ENABLED] = verificationEnabled
+                if (codeVerified != null) prefs[Keys.EMAIL_CODE_VERIFIED] = codeVerified
+                if (recoveryEmail != null) prefs[Keys.RECOVERY_EMAIL] = recoveryEmail.trim()
+                if (recoveryEmailVerified != null) prefs[Keys.RECOVERY_EMAIL_VERIFIED] = recoveryEmailVerified
+            }
         }
     }
 }

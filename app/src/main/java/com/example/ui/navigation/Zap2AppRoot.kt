@@ -77,6 +77,7 @@ import com.example.ui.aichat.AiChatViewModel
 import com.example.ui.auth.AuthScreen
 import com.example.ui.backup.BackupAndSettingsScreen
 import com.example.ui.backup.BackupViewModel
+import com.example.ui.backup.EmailVerificationGateDialog
 import com.example.ui.calls.ActiveCallScreen
 import com.example.ui.calls.CallsHistoryScreen
 import com.example.ui.calls.CallsViewModel
@@ -286,6 +287,10 @@ private fun Zap2AuthenticatedShell(
     )
 
     val incomingCalls by callsViewModel.incomingCalls.collectAsStateWithLifecycle()
+    val myProfile by backupViewModel.myProfile.collectAsStateWithLifecycle()
+    val activeVerificationChallenge by backupViewModel.activeVerificationChallenge.collectAsStateWithLifecycle()
+    val backupBusy by backupViewModel.isBusy.collectAsStateWithLifecycle()
+    val backupStatusMessage by backupViewModel.statusMessage.collectAsStateWithLifecycle()
     val userSettings by container.settingsStore.settingsFlow
         .collectAsStateWithLifecycle(initialValue = UserSettings())
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -663,6 +668,20 @@ private fun Zap2AuthenticatedShell(
                                 )
                             }
                         }
+                    }
+
+                    val verificationEnabled = myProfile?.emailVerificationEnabled ?: userSettings.emailVerificationEnabled
+                    val primaryVerified = myProfile?.emailCodeVerified ?: userSettings.emailCodeVerified
+                    if (verificationEnabled && !primaryVerified) {
+                        EmailVerificationGateDialog(
+                            primaryEmail = myProfile?.email ?: Firebase.auth.currentUser?.email,
+                            activeChallenge = activeVerificationChallenge,
+                            isBusy = backupBusy,
+                            statusMessage = backupStatusMessage,
+                            onEnsureCodeGenerated = backupViewModel::generatePrimaryEmailCode,
+                            onSubmitCode = backupViewModel::submitEmailVerificationCode,
+                            onDisableVerification = { backupViewModel.setEmailVerificationEnabled(false) }
+                        )
                     }
                 }
             }

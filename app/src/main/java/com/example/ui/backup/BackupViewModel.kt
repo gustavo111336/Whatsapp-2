@@ -16,6 +16,10 @@ import com.example.data.remote.UserAndContactsRepository
 import com.example.data.remote.unwrapFirestoreException
 import com.example.service.AppUpdateCoordinator
 import com.example.service.AppUpdateUiState
+import com.example.service.CodeVerificationOutcome
+import com.example.service.EmailVerificationChallenge
+import com.example.service.EmailVerificationHelper
+import com.example.service.EmailVerificationTarget
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -76,6 +80,13 @@ class BackupViewModel(
     val usernameAvailability: StateFlow<UsernameAvailability> = _usernameAvailability.asStateFlow()
 
     val appUpdateState: StateFlow<AppUpdateUiState> = appUpdateCoordinator.state
+
+    private val _activeVerificationChallenge = MutableStateFlow<EmailVerificationChallenge?>(null)
+    val activeVerificationChallenge: StateFlow<EmailVerificationChallenge?> =
+        _activeVerificationChallenge.asStateFlow()
+
+    private val _firebaseEmailVerified = MutableStateFlow(authRepository.currentUser()?.isEmailVerified == true)
+    val firebaseEmailVerified: StateFlow<Boolean> = _firebaseEmailVerified.asStateFlow()
 
     private var usernameCheckJob: Job? = null
 
@@ -454,6 +465,191 @@ class BackupViewModel(
 
     fun installDownloadedUpdate() {
         appUpdateCoordinator.installDownloadedUpdate()
+    }
+
+    fun setEmailVerificationEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            userRepository.setEmailVerificationEnabled(enabled)
+                .onSuccess {
+                    if (enabled) {
+                        val targetEmail = myProfile.value?.email
+                            ?: authRepository.currentUser()?.email
+                            ?: "$currentUserId@whatwillido.app"
+                        val challenge = EmailVerificationHelper.createChallenge(
+                            targetEmail = targetEmail,
+                            target = EmailVerificationTarget.PRIMARY
+                        )
+                        _activeVerificationChallenge.value = challenge
+                        _statusMessage.value =
+                            "Verificação de e-mail ativada! Código de 6 dígitos (letras e números): ${challenge.code}"
+                    } else {
+                        if (_activeVerificationChallenge.value?.target == EmailVerificationTarget.PRIMARY) {
+                            _activeVerificationChallenge.value = null
+                        }
+                        _statusMessage.value = "Verificação de e-mail desativada."
+                    }
+                }
+                .onFailure { err ->
+                    _statusMessage.value = err.localizedMessage ?: "Falha ao alterar verificação de e-mail."
+                }
+            _isBusy.value = false
+        }
+    }
+
+    fun generatePrimaryEmailCode() {
+        val targetEmail = myProfile.value?.email
+            ?: authRepository.currentUser()?.email
+            ?: "$currentUserId@whatwillido.app"
+        val challenge = EmailVerificationHelper.createChallenge(
+            targetEmail = targetEmail,
+            target = EmailVerificationTarget.PRIMARY
+        )
+        _activeVerificationChallenge.value = challenge
+        _statusMessage.value =
+            "Novo código de 6 dígitos gerado para $targetEmail: ${challenge.code}"
+    }
+
+    fun generateRecoveryEmailCode(emailOverride: String? = null) {
+        val targetEmail = (emailOverride ?: myProfile.value?.recoveryEmail ?: userSettings.value.recoveryEmail).trim()
+        if (!EmailVerificationHelper.isValidEmail(targetEmail)) {
+            _statusMessage.value = "Salve ou informe um e-mail de recuperação válido primeiro."
+            return
+        }
+        val challenge = EmailVerificationHelper.createChallenge(
+            targetEmail = targetEmail,
+            target = EmailVerificationTarget.RECOVERY
+        )
+        _activeVerificationChallenge.value = challenge
+        _statusMessage.value =
+            "Código de 6 dígitos para o e-mail de recuperação ($targetEmail): ${challenge.code}"
+    }
+
+    fun submitEmailVerificationCode(rawInput: String) {
+        val challenge = _activeVerificationChallenge.value
+        if (challenge == null) {
+            _statusMessage.value = "Gere um código de 6 dígitos (letras e números) primeiro."
+            return
+        }
+        val (outcome, updatedChallenge) = EmailVerificationHelper.verifyChallenge(challenge, rawInput)
+        when (outcome) {
+            CodeVerificationOutcome.Verified -> {
+                viewModelScope.launch {
+                    _isBusy.value = true
+                    val result = when (challenge.target) {
+                        EmailVerificationTarget.PRIMARY -> userRepository.markPrimaryEmailCodeVerified()
+                        EmailVerificationTarget.RECOVERY -> userRepository.markRecoveryEmailCodeVerified()
+                    }
+                    result.onSuccess {
+                        _activeVerificationChallenge.value = null
+                        _statusMessage.value = when (challenge.target) {
+                            EmailVerificationTarget.PRIMARY ->
+                                "E-mail principal verificado com o código de 6 caracteres!"
+                            EmailVerificationTarget.RECOVERY ->
+                                "E-mail de recuperação confirmado e verificado com sucesso!"
+                        }
+                    }.onFailure { err ->
+                        _statusMessage.value = err.localizedMessage ?: "Falha ao salvar verificação."
+                    }
+                    _isBusy.value = false
+                }
+            }
+            CodeVerificationOutcome.InvalidFormat -> {
+                _statusMessage.value = "Digite os 6 caracteres (letras e números) do código exibido."
+            }
+            is CodeVerificationOutcome.Mismatch -> {
+                _activeVerificationChallenge.value = updatedChallenge
+                _statusMessage.value =
+                    "Código incorreto. Restam ${outcome.attemptsRemaining} tentativa(s)."
+            }
+            CodeVerificationOutcome.Expired -> {
+                _activeVerificationChallenge.value = null
+                _statusMessage.value = "Código expirado. Gere um novo código de 6 dígitos."
+            }
+            CodeVerificationOutcome.LockedOut -> {
+                _activeVerificationChallenge.value = null
+                _statusMessage.value = "Muitas tentativas. Gere um novo código de 6 dígitos."
+            }
+        }
+    }
+
+    fun saveRecoveryEmail(rawEmail: String) {
+        val clean = rawEmail.trim()
+        if (clean.isNotEmpty() && !EmailVerificationHelper.isValidEmail(clean)) {
+            _statusMessage.value = "Digite um e-mail de recuperação válido (ex: backup@dominio.com)."
+            return
+        }
+        viewModelScope.launch {
+            _isBusy.value = true
+            userRepository.updateRecoveryEmail(clean.ifBlank { null })
+                .onSuccess { saved ->
+                    if (saved == null) {
+                        if (_activeVerificationChallenge.value?.target == EmailVerificationTarget.RECOVERY) {
+                            _activeVerificationChallenge.value = null
+                        }
+                        _statusMessage.value = "E-mail de recuperação removido da conta."
+                    } else {
+                        val challenge = EmailVerificationHelper.createChallenge(
+                            targetEmail = saved,
+                            target = EmailVerificationTarget.RECOVERY
+                        )
+                        _activeVerificationChallenge.value = challenge
+                        _statusMessage.value =
+                            "E-mail de recuperação salvo ($saved)! Confirme com o código ${challenge.code}."
+                    }
+                }
+                .onFailure { err ->
+                    _statusMessage.value = err.localizedMessage ?: "Falha ao atualizar e-mail de recuperação."
+                }
+            _isBusy.value = false
+        }
+    }
+
+    fun sendFirebaseVerificationLink() {
+        viewModelScope.launch {
+            _isBusy.value = true
+            authRepository.sendFirebaseEmailVerification()
+                .onSuccess {
+                    _statusMessage.value = "E-mail oficial de verificação enviado pelo Firebase Auth!"
+                }
+                .onFailure { err ->
+                    _statusMessage.value = err.localizedMessage ?: "Não foi possível enviar o e-mail de verificação."
+                }
+            _isBusy.value = false
+        }
+    }
+
+    fun refreshFirebaseVerificationStatus() {
+        viewModelScope.launch {
+            _isBusy.value = true
+            authRepository.reloadCurrentUserEmailVerified()
+                .onSuccess { verified ->
+                    _firebaseEmailVerified.value = verified
+                    _statusMessage.value = if (verified) {
+                        "E-mail confirmado no Firebase Auth!"
+                    } else {
+                        "E-mail ainda pendente no Firebase Auth. Use o código de 6 dígitos ou confirme o link."
+                    }
+                }
+                .onFailure { err ->
+                    _statusMessage.value = err.localizedMessage ?: "Não foi possível atualizar status do e-mail."
+                }
+            _isBusy.value = false
+        }
+    }
+
+    fun sendAccountRecoveryEmail(targetEmail: String) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            authRepository.sendRecoveryEmail(targetEmail)
+                .onSuccess {
+                    _statusMessage.value = "Link de recuperação enviado para ${targetEmail.trim().lowercase()}!"
+                }
+                .onFailure { err ->
+                    _statusMessage.value = err.localizedMessage ?: "Falha ao enviar recuperação para $targetEmail."
+                }
+            _isBusy.value = false
+        }
     }
 
     fun clearStatusMessage() {

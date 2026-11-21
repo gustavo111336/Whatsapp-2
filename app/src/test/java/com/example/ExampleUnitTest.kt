@@ -2,6 +2,9 @@ package com.example
 
 import com.example.data.local.DEFAULT_AI_MODEL
 import com.example.service.AiAssistantService
+import com.example.service.CodeVerificationOutcome
+import com.example.service.EmailVerificationHelper
+import com.example.service.EmailVerificationTarget
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -29,5 +32,52 @@ class ExampleUnitTest {
   fun normalizeModelName_fallsBackToDefaultWhenBlank() {
     assertEquals(DEFAULT_AI_MODEL, AiAssistantService.normalizeModelName("   "))
     assertEquals("gemini-4-argon", AiAssistantService.normalizeModelName("**gemini-4-argon**"))
+  }
+
+  @Test
+  fun generateAlphanumericCode_isSixCharsWithLettersAndDigits() {
+    repeat(25) {
+      val code = EmailVerificationHelper.generateAlphanumericCode()
+      assertEquals(6, code.length)
+      assertTrue("Code $code should contain uppercase letters", code.any { it in 'A'..'Z' })
+      assertTrue("Code $code should contain digits", code.any { it in '0'..'9' })
+      assertTrue("Code $code must match [A-Z0-9]{6}", EmailVerificationHelper.isValidCodeFormat(code))
+    }
+  }
+
+  @Test
+  fun verifyChallenge_handlesCaseInsensitiveMatchAndMismatchAndExpiry() {
+    val now = 1_000_000L
+    val challenge = EmailVerificationHelper.createChallenge(
+      targetEmail = "user@example.com",
+      target = EmailVerificationTarget.PRIMARY,
+      nowMs = now
+    )
+
+    val (badOutcome, afterBad) = EmailVerificationHelper.verifyChallenge(challenge, "WRONG1", nowMs = now + 1000L)
+    assertTrue(badOutcome is CodeVerificationOutcome.Mismatch)
+    assertEquals(4, (badOutcome as CodeVerificationOutcome.Mismatch).attemptsRemaining)
+
+    val (okOutcome, _) = EmailVerificationHelper.verifyChallenge(
+      afterBad,
+      challenge.code.lowercase(),
+      nowMs = now + 2000L
+    )
+    assertEquals(CodeVerificationOutcome.Verified, okOutcome)
+
+    val (expiredOutcome, _) = EmailVerificationHelper.verifyChallenge(
+      challenge,
+      challenge.code,
+      nowMs = challenge.expiresAtMs + 1L
+    )
+    assertEquals(CodeVerificationOutcome.Expired, expiredOutcome)
+  }
+
+  @Test
+  fun emailValidationAndMasking_workCorrectly() {
+    assertTrue(EmailVerificationHelper.isValidEmail("backup.user@gmail.com"))
+    assertFalse(EmailVerificationHelper.isValidEmail("invalid/path@gmail.com"))
+    assertFalse(EmailVerificationHelper.isValidEmail("not-an-email"))
+    assertEquals("a***a@gmail.com", EmailVerificationHelper.maskEmail("alice.silva@gmail.com"))
   }
 }

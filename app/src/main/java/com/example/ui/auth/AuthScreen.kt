@@ -24,7 +24,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.MarkEmailRead
 import androidx.compose.material.icons.rounded.VideoCall
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -32,8 +34,11 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -48,6 +53,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -56,6 +62,7 @@ import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.data.remote.AuthRepository
 import com.example.data.remote.GoogleSignInOutcome
+import com.example.service.EmailVerificationHelper
 import kotlinx.coroutines.launch
 
 @Composable
@@ -64,10 +71,15 @@ fun AuthScreen(
     onAuthenticated: () -> Unit
 ) {
     val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
     val scope = rememberCoroutineScope()
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var visible by remember { mutableStateOf(false) }
+    var showRecoveryDialog by remember { mutableStateOf(false) }
+    var recoveryEmailInput by remember { mutableStateOf("") }
+    var recoveryFeedback by remember { mutableStateOf<String?>(null) }
+    var recoveryBusy by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         visible = true
@@ -265,9 +277,149 @@ fun AuthScreen(
                     }
                 }
 
+                OutlinedButton(
+                    onClick = {
+                        recoveryFeedback = null
+                        showRecoveryDialog = true
+                    },
+                    enabled = !isLoading,
+                    shape = RoundedCornerShape(22.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                        .testTag("recover_account_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.MarkEmailRead,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = " Recuperar e-mail ou conta",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+
                 Spacer(modifier = Modifier.height(4.dp))
             }
         }
+    }
+
+    if (showRecoveryDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!recoveryBusy) showRecoveryDialog = false },
+            icon = { Icon(Icons.Rounded.MarkEmailRead, contentDescription = null) },
+            title = { Text("Recuperação de E-mail e Conta") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Informe seu e-mail para solicitar a recuperação pelo Firebase ou escolha outra Conta Google vinculada ao WhatwillIdo.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = recoveryEmailInput,
+                        onValueChange = { recoveryEmailInput = it },
+                        label = { Text("E-mail principal ou de recuperação") },
+                        placeholder = { Text("seuemail@exemplo.com") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("auth_recovery_email_input")
+                    )
+                    if (!recoveryFeedback.isNullOrBlank()) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = recoveryFeedback.orEmpty(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            showRecoveryDialog = false
+                            val activity = context as? Activity
+                            if (activity == null) {
+                                errorMessage = "Contexto de Activity indisponível."
+                            } else {
+                                isLoading = true
+                                errorMessage = null
+                                scope.launch {
+                                    when (val outcome = authRepository.signInWithGoogleInteractive(activity)) {
+                                        is GoogleSignInOutcome.Success -> {
+                                            isLoading = false
+                                            onAuthenticated()
+                                        }
+                                        GoogleSignInOutcome.Cancelled -> isLoading = false
+                                        is GoogleSignInOutcome.Error -> {
+                                            isLoading = false
+                                            errorMessage = outcome.message
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Escolher outra Conta Google")
+                    }
+                    TextButton(
+                        onClick = {
+                            runCatching {
+                                uriHandler.openUri("https://accounts.google.com/signin/recovery")
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Abrir recuperação oficial da Conta Google")
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val candidate = recoveryEmailInput.trim()
+                        if (!EmailVerificationHelper.isValidEmail(candidate)) {
+                            recoveryFeedback = "Digite um endereço de e-mail válido."
+                            return@Button
+                        }
+                        recoveryBusy = true
+                        recoveryFeedback = null
+                        scope.launch {
+                            authRepository.sendRecoveryEmail(candidate)
+                                .onSuccess {
+                                    recoveryFeedback = "E-mail de recuperação enviado para ${EmailVerificationHelper.maskEmail(candidate)} (verifique a caixa de entrada e spam). Se sua conta usar login exclusivo Google, use \"Escolher outra Conta Google\"."
+                                }
+                                .onFailure { err ->
+                                    recoveryFeedback = err.localizedMessage
+                                        ?: "Se sua conta usa login Google, selecione sua Conta Google acima ou use a recuperação oficial do Google."
+                                }
+                            recoveryBusy = false
+                        }
+                    },
+                    enabled = !recoveryBusy && recoveryEmailInput.isNotBlank(),
+                    modifier = Modifier.testTag("auth_send_recovery_button")
+                ) {
+                    Text(if (recoveryBusy) "Enviando…" else "Enviar recuperação")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showRecoveryDialog = false },
+                    enabled = !recoveryBusy
+                ) {
+                    Text("Fechar")
+                }
+            }
+        )
     }
 }
 

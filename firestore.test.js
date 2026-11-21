@@ -233,6 +233,29 @@ test("PII isolation, unique @username claim, exact email lookup, and disabled ph
       updatedAt: new Date(Date.now() + 60000),
     })
   );
+
+  // Owner can toggle emailVerificationEnabled, verify code status, and set valid recoveryEmail; invalid recoveryEmail fails
+  await assertSucceeds(
+    aliceDb.collection("users").doc(ALICE_UID).update({
+      emailVerificationEnabled: true,
+      emailCodeVerified: true,
+      recoveryEmail: "alice.backup@example.org",
+      recoveryEmailVerified: true,
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+  await assertSucceeds(
+    aliceDb.collection("users").doc(ALICE_UID).update({
+      emailVerificationEnabled: false,
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+  await assertFails(
+    aliceDb.collection("users").doc(ALICE_UID).update({
+      recoveryEmail: "not-an-email",
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
 });
 
 test("Contacts subcollection supports @username and is isolated per owner", async () => {

@@ -102,6 +102,9 @@ class UserAndContactsRepository(
                     "about" to resolvedAbout.take(160),
                     "phoneVerified" to false,
                     "email" to resolvedEmail,
+                    "emailVerificationEnabled" to true,
+                    "emailCodeVerified" to false,
+                    "recoveryEmailVerified" to false,
                     "photoUrl" to resolvedPhoto,
                     "online" to true,
                     "lastSeen" to FieldValue.serverTimestamp(),
@@ -125,6 +128,15 @@ class UserAndContactsRepository(
                 }
                 if (existing.getString("email").isNullOrBlank() && resolvedEmail != null) {
                     updateMap["email"] = resolvedEmail
+                }
+                if (!existing.contains("emailVerificationEnabled")) {
+                    updateMap["emailVerificationEnabled"] = true
+                }
+                if (!existing.contains("emailCodeVerified")) {
+                    updateMap["emailCodeVerified"] = false
+                }
+                if (!existing.contains("recoveryEmailVerified")) {
+                    updateMap["recoveryEmailVerified"] = false
                 }
                 privateRef.update(updateMap.filterValues { it != null } as Map<String, Any>).await()
             }
@@ -160,6 +172,17 @@ class UserAndContactsRepository(
                 about = resolvedAbout,
                 photoUrl = resolvedPhoto.orEmpty(),
                 bannerUrl = resolvedBanner.orEmpty()
+            )
+            val resolvedVerificationEnabled = existing.getBoolean("emailVerificationEnabled") ?: true
+            val resolvedCodeVerified = existing.getBoolean("emailCodeVerified") ?: false
+            val resolvedRecoveryEmail = existing.getString("recoveryEmail")?.trim().orEmpty()
+            val resolvedRecoveryVerified = existing.getBoolean("recoveryEmailVerified") ?: false
+            settingsStore?.saveEmailSecurityState(
+                uid = uid,
+                verificationEnabled = resolvedVerificationEnabled,
+                codeVerified = resolvedCodeVerified,
+                recoveryEmail = resolvedRecoveryEmail,
+                recoveryEmailVerified = resolvedRecoveryVerified
             )
 
             Result.success(Unit)
@@ -264,6 +287,13 @@ class UserAndContactsRepository(
                             about = profile.about,
                             photoUrl = profile.photoUrl.orEmpty(),
                             bannerUrl = profile.bannerUrl.orEmpty()
+                        )
+                        settingsStore?.saveEmailSecurityState(
+                            uid = uid,
+                            verificationEnabled = profile.emailVerificationEnabled,
+                            codeVerified = profile.emailCodeVerified,
+                            recoveryEmail = profile.recoveryEmail.orEmpty(),
+                            recoveryEmailVerified = profile.recoveryEmailVerified
                         )
                     }
                     profile
@@ -709,6 +739,105 @@ class UserAndContactsRepository(
             throw e
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.UPDATE, "users/$uid")
+        }
+    }
+
+    suspend fun setEmailVerificationEnabled(enabled: Boolean): Result<Unit> {
+        val uid = auth.currentUser?.uid ?: return Result.failure(IllegalStateException("Não autenticado"))
+        return try {
+            val payload = mutableMapOf<String, Any>(
+                "emailVerificationEnabled" to enabled,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            if (enabled) {
+                payload["emailCodeVerified"] = false
+            }
+            db.collection("users").document(uid).update(payload).await()
+            settingsStore?.saveEmailSecurityState(
+                uid = uid,
+                verificationEnabled = enabled,
+                codeVerified = if (enabled) false else null
+            )
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, "users/$uid")
+            Result.failure(e)
+        }
+    }
+
+    suspend fun markPrimaryEmailCodeVerified(): Result<Unit> {
+        val uid = auth.currentUser?.uid ?: return Result.failure(IllegalStateException("Não autenticado"))
+        return try {
+            db.collection("users").document(uid).update(
+                mapOf(
+                    "emailCodeVerified" to true,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            settingsStore?.saveEmailSecurityState(uid = uid, codeVerified = true)
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, "users/$uid")
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateRecoveryEmail(rawEmail: String?): Result<String?> {
+        val uid = auth.currentUser?.uid ?: return Result.failure(IllegalStateException("Não autenticado"))
+        val clean = rawEmail?.trim()?.lowercase(Locale.ROOT)?.take(160).orEmpty()
+        if (clean.isNotEmpty() && (!EMAIL_REGEX.matches(clean) || clean.contains('/'))) {
+            return Result.failure(IllegalArgumentException("Digite um e-mail de recuperação válido."))
+        }
+        val primaryEmail = auth.currentUser?.email?.trim()?.lowercase(Locale.ROOT)
+        if (clean.isNotEmpty() && primaryEmail != null && clean == primaryEmail) {
+            return Result.failure(IllegalArgumentException("Use um e-mail secundário diferente do e-mail principal."))
+        }
+        return try {
+            val userRef = db.collection("users").document(uid)
+            val updates = mutableMapOf<String, Any>(
+                "recoveryEmailVerified" to false,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            if (clean.isEmpty()) {
+                updates["recoveryEmail"] = FieldValue.delete()
+            } else {
+                updates["recoveryEmail"] = clean
+            }
+            userRef.update(updates).await()
+            settingsStore?.saveEmailSecurityState(
+                uid = uid,
+                recoveryEmail = clean,
+                recoveryEmailVerified = false
+            )
+            Result.success(clean.ifEmpty { null })
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, "users/$uid")
+            Result.failure(e)
+        }
+    }
+
+    suspend fun markRecoveryEmailCodeVerified(): Result<Unit> {
+        val uid = auth.currentUser?.uid ?: return Result.failure(IllegalStateException("Não autenticado"))
+        return try {
+            db.collection("users").document(uid).update(
+                mapOf(
+                    "recoveryEmailVerified" to true,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            settingsStore?.saveEmailSecurityState(uid = uid, recoveryEmailVerified = true)
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, "users/$uid")
+            Result.failure(e)
         }
     }
 
