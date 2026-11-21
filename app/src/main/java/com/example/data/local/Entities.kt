@@ -41,6 +41,7 @@ data class LocalContactEntity(
     @PrimaryKey val contactId: String,
     val ownerId: String,
     val peerUid: String,
+    val username: String? = null,
     val displayName: String,
     val phoneNumber: String?,
     val photoUrl: String?,

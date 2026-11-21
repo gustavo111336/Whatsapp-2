@@ -19,7 +19,7 @@ object ZipArchiveHelper {
 
     fun getAppDefaultRootDir(context: Context): File {
         val base = context.getExternalFilesDir(null) ?: context.filesDir
-        return File(base, "Zap2_Extraidos").apply { mkdirs() }
+        return File(base, "WhatwillIdo_Extraidos").apply { mkdirs() }
     }
 
     fun formatDefaultExtractSummary(context: Context, customTreeUri: String): String {

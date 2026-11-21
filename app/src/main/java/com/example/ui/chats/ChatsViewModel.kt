@@ -14,6 +14,9 @@ import com.example.data.remote.UserAndContactsRepository
 import com.example.data.remote.unwrapFirestoreException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -27,7 +30,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalCoroutinesApi::class)
+@OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class ChatsViewModel(
     private val chatRepository: ChatRepository,
     private val userRepository: UserAndContactsRepository,
@@ -37,6 +40,14 @@ class ChatsViewModel(
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    private val _discoveredUsers = MutableStateFlow<List<PublicProfile>>(emptyList())
+    val discoveredUsers: StateFlow<List<PublicProfile>> = _discoveredUsers.asStateFlow()
+
+    private val _isSearchingUsers = MutableStateFlow(false)
+    val isSearchingUsers: StateFlow<Boolean> = _isSearchingUsers.asStateFlow()
+
+    private var userSearchJob: Job? = null
 
     private val _actionMessage = MutableStateFlow<String?>(null)
     val actionMessage: StateFlow<String?> = _actionMessage.asStateFlow()
@@ -89,15 +100,19 @@ class ChatsViewModel(
 
     val chatsState: StateFlow<UiState<List<ChatRoom>>> = combine(
         allChatsFlow,
+        peerProfiles,
         _searchQuery
-    ) { chats, query ->
+    ) { chats, peers, query ->
         val filtered = if (query.isBlank()) {
             chats
         } else {
             val q = query.trim().lowercase()
+            val qHandle = q.trimStart('@')
             chats.filter { chat ->
+                val peerUsername = chat.peerUidForDirect(currentUserId)?.let { peers[it]?.username }?.lowercase().orEmpty()
                 chat.resolveDisplayTitle(currentUserId).lowercase().contains(q) ||
-                    chat.lastMessageText.lowercase().contains(q)
+                    chat.lastMessageText.lowercase().contains(q) ||
+                    (qHandle.isNotEmpty() && peerUsername.contains(qHandle))
             }
         }
         UiState.Success(filtered) as UiState<List<ChatRoom>>
@@ -113,6 +128,25 @@ class ChatsViewModel(
 
     fun onSearchQueryChange(query: String) {
         _searchQuery.value = query
+        userSearchJob?.cancel()
+        val trimmed = query.trim()
+        if (trimmed.length < 2) {
+            _discoveredUsers.value = emptyList()
+            _isSearchingUsers.value = false
+            return
+        }
+        _isSearchingUsers.value = true
+        userSearchJob = viewModelScope.launch {
+            delay(300L)
+            userRepository.searchUsers(trimmed)
+                .onSuccess { matches ->
+                    _discoveredUsers.value = matches.filter { it.uid != currentUserId }
+                }
+                .onFailure {
+                    _discoveredUsers.value = emptyList()
+                }
+            _isSearchingUsers.value = false
+        }
     }
 
     fun clearMessage() {

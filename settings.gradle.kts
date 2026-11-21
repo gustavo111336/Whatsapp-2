@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "Zap2"
+rootProject.name = "WhatwillIdo"
 
 include(":app")

@@ -2,17 +2,18 @@
   "entities": {
     "UserPrivate": {
       "title": "UserPrivate",
-      "description": "Private user profile, phone verification state, FCM token, and cloud backup metadata.",
+      "description": "Private user profile, immutable Google UID identity, optional unverified phone, FCM token, and cloud backup metadata.",
       "type": "object",
       "properties": {
-        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "uid": { "type": "string", "description": "Firebase Auth UID (immutable identity key)" },
+        "username": { "type": "string", "description": "Unique normalized handle without @ (^[a-z0-9._]{3,24}$)" },
         "displayName": { "type": "string", "description": "User display name" },
         "about": { "type": "string", "description": "Status bio text" },
-        "phoneNumber": { "type": "string", "description": "User E.164 or normalized phone number" },
-        "phoneVerified": { "type": "boolean", "description": "Whether phone was verified via SMS" },
+        "phoneNumber": { "type": "string", "description": "Optional informative phone number (never verified or used for identity)" },
+        "phoneVerified": { "type": "boolean", "description": "Always false (SMS verification disabled)" },
         "email": { "type": "string", "description": "User email from Google Sign-In" },
         "photoUrl": { "type": "string", "description": "Profile avatar URL (static image, GIF, or looping MP4)" },
-        "bannerUrl": { "type": "string", "description": "Profile top banner image URL" },
+        "bannerUrl": { "type": "string", "description": "Profile top banner image, GIF, or MP4 URL" },
         "fcmToken": { "type": "string", "description": "Firebase Cloud Messaging device token" },
         "online": { "type": "boolean", "description": "Current online status" },
         "lastSeen": { "type": "string", "format": "date-time", "description": "Last seen timestamp (FieldValue.serverTimestamp())" },
@@ -25,26 +26,42 @@
     },
     "PublicProfile": {
       "title": "PublicProfile",
-      "description": "Non-PII user presence and display metadata accessible by exact UID.",
+      "description": "Non-PII public discovery profile (UID, @username, name, avatar, banner, presence) readable by authenticated users.",
       "type": "object",
       "properties": {
         "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "username": { "type": "string", "description": "Unique normalized handle without @ (^[a-z0-9._]{3,24}$)" },
         "displayName": { "type": "string", "description": "Display name" },
+        "displayNameLower": { "type": "string", "description": "Lowercase display name for prefix search" },
         "about": { "type": "string", "description": "About status line" },
         "photoUrl": { "type": "string", "description": "Avatar URL (static image, GIF, or looping MP4)" },
-        "bannerUrl": { "type": "string", "description": "Profile top banner image URL" },
+        "bannerUrl": { "type": "string", "description": "Profile top banner image, GIF, or MP4 URL" },
         "online": { "type": "boolean", "description": "Real-time online indicator" },
         "lastSeen": { "type": "string", "format": "date-time", "description": "Last active timestamp (FieldValue.serverTimestamp())" },
         "updatedAt": { "type": "string", "format": "date-time", "description": "Update timestamp (FieldValue.serverTimestamp())" }
       },
       "required": ["uid", "displayName", "online", "updatedAt"]
     },
-    "PhoneLookup": {
-      "title": "PhoneLookup",
-      "description": "Maps normalized phone digits to a Zap2 UID for contact discovery.",
+    "UsernameLookup": {
+      "title": "UsernameLookup",
+      "description": "Atomic unique @username reservation index mapping normalized handle to owner UID.",
       "type": "object",
       "properties": {
-        "uid": { "type": "string", "description": "Owner UID" },
+        "uid": { "type": "string", "description": "Owner Firebase UID" },
+        "username": { "type": "string", "description": "Normalized handle matching document ID" },
+        "displayName": { "type": "string", "description": "Display name" },
+        "photoUrl": { "type": "string", "description": "Avatar URL" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Update timestamp (FieldValue.serverTimestamp())" }
+      },
+      "required": ["uid", "username", "displayName", "updatedAt"]
+    },
+    "EmailLookup": {
+      "title": "EmailLookup",
+      "description": "Exact lowercase Google email lookup mapping to UID without allowing email list scraping.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Owner Firebase UID" },
+        "username": { "type": "string", "description": "Normalized handle" },
         "displayName": { "type": "string", "description": "Display name" },
         "photoUrl": { "type": "string", "description": "Avatar URL" },
         "updatedAt": { "type": "string", "format": "date-time", "description": "Update timestamp (FieldValue.serverTimestamp())" }
@@ -53,13 +70,14 @@
     },
     "ContactEntry": {
       "title": "ContactEntry",
-      "description": "User's saved contact linking a device or searched contact to a Zap2 UID.",
+      "description": "User's saved contact linking a searched Zap2 user to their immutable UID.",
       "type": "object",
       "properties": {
         "ownerId": { "type": "string", "description": "Owner UID" },
         "peerUid": { "type": "string", "description": "Target user UID" },
+        "username": { "type": "string", "description": "Peer normalized @username" },
         "displayName": { "type": "string", "description": "Contact display name" },
-        "phoneNumber": { "type": "string", "description": "Contact phone number" },
+        "phoneNumber": { "type": "string", "description": "Optional informative phone number" },
         "photoUrl": { "type": "string", "description": "Contact avatar URL" },
         "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp (FieldValue.serverTimestamp())" },
         "updatedAt": { "type": "string", "format": "date-time", "description": "Update timestamp (FieldValue.serverTimestamp())" }
@@ -227,11 +245,15 @@
     },
     "/public_profiles/{userId}": {
       "schema": { "$ref": "#/entities/PublicProfile" },
-      "description": "Public presence and non-PII profile readable by exact UID"
+      "description": "Public non-PII profile readable and searchable by authenticated users"
     },
-    "/phone_lookup/{phoneKey}": {
-      "schema": { "$ref": "#/entities/PhoneLookup" },
-      "description": "Phone digit lookup mapping to UID for contact addition"
+    "/username_lookup/{usernameKey}": {
+      "schema": { "$ref": "#/entities/UsernameLookup" },
+      "description": "Unique @username index mapping normalized handle to UID"
+    },
+    "/email_lookup/{emailKey}": {
+      "schema": { "$ref": "#/entities/EmailLookup" },
+      "description": "Exact lowercase Google email lookup mapping to UID (no listing allowed)"
     },
     "/users/{userId}/contacts/{contactId}": {
       "schema": { "$ref": "#/entities/ContactEntry" },

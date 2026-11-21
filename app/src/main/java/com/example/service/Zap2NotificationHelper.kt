@@ -90,7 +90,7 @@ object Zap2NotificationHelper {
             "APK" -> raw.ifBlank { "Enviou um aplicativo APK" }
             "ZIP" -> raw.ifBlank { "Enviou um arquivo ZIP" }
             "FILE" -> raw.ifBlank { "Enviou um arquivo" }
-            else -> raw.ifBlank { "Nova mensagem no Zap2" }
+            else -> raw.ifBlank { "Nova mensagem no WhatwillIdo" }
         }
     }
 
@@ -123,7 +123,7 @@ object Zap2NotificationHelper {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val cleanTitle = title.ifBlank { "Nova mensagem no Zap2" }
+        val cleanTitle = title.ifBlank { "Nova mensagem no WhatwillIdo" }
         val cleanBody = body.ifBlank { "Você recebeu uma nova mensagem." }
 
         val notification = NotificationCompat.Builder(context, Zap2Application.CHANNEL_MESSAGES)
@@ -160,7 +160,7 @@ object Zap2NotificationHelper {
     ) {
         if (!hasNotificationPermission(context)) return
         val notifId = callNotificationId(callId)
-        val cleanCaller = callerName.trim().ifBlank { "Contato Zap2" }
+        val cleanCaller = callerName.trim().ifBlank { "Contato WhatwillIdo" }
         val callerPerson = Person.Builder()
             .setName(cleanCaller)
             .setImportant(true)
@@ -206,9 +206,9 @@ object Zap2NotificationHelper {
         )
 
         val callSubtitle = if (isVideo) {
-            "Chamada de vídeo recebida no Zap2"
+            "Chamada de vídeo recebida no WhatwillIdo"
         } else {
-            "Chamada de voz recebida no Zap2"
+            "Chamada de voz recebida no WhatwillIdo"
         }
 
         val callStyle = NotificationCompat.CallStyle.forIncomingCall(
@@ -254,7 +254,7 @@ object Zap2NotificationHelper {
     ) {
         if (!hasNotificationPermission(context)) return
         val notifId = callNotificationId(callId)
-        val cleanPeer = peerName.trim().ifBlank { "Chamada Zap2" }
+        val cleanPeer = peerName.trim().ifBlank { "Chamada WhatwillIdo" }
         val peerPerson = Person.Builder()
             .setName(cleanPeer)
             .setImportant(true)

@@ -1,7 +1,6 @@
 package com.example.ui.backup
 
 import android.Manifest
-import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -32,6 +31,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Logout
+import androidx.compose.material.icons.rounded.AlternateEmail
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material.icons.rounded.CloudDone
@@ -41,15 +41,14 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.FolderZip
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Palette
-import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.Storage
-import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -108,25 +107,29 @@ fun BackupAndSettingsScreen(
     val isBusy by viewModel.isBusy.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
     val pendingExportFile by viewModel.pendingExportFile.collectAsStateWithLifecycle()
-    val verificationId by viewModel.verificationId.collectAsStateWithLifecycle()
     val mediaUploadProgress by viewModel.mediaUploadProgress.collectAsStateWithLifecycle()
+    val usernameAvailability by viewModel.usernameAvailability.collectAsStateWithLifecycle()
 
     val effectiveBannerUrl = myProfile?.bannerUrl?.takeIf { it.isNotBlank() }
         ?: settings.cachedBannerUrl.takeIf { it.isNotBlank() }
     val effectivePhotoUrl = myProfile?.photoUrl?.takeIf { it.isNotBlank() }
         ?: settings.cachedPhotoUrl.takeIf { it.isNotBlank() }
     val effectiveName = myProfile?.displayName?.takeIf { it.isNotBlank() }
-        ?: settings.cachedDisplayName.ifBlank { "Zap2" }
+        ?: settings.cachedDisplayName.ifBlank { "WhatwillIdo" }
+    val effectiveUsername = myProfile?.username?.takeIf { it.isNotBlank() }
+        ?: settings.cachedUsername
 
     var displayName by remember(myProfile?.displayName, settings.cachedDisplayName) {
         mutableStateOf(myProfile?.displayName ?: settings.cachedDisplayName)
+    }
+    var usernameInput by remember(myProfile?.username, settings.cachedUsername) {
+        mutableStateOf(myProfile?.username ?: settings.cachedUsername)
     }
     var about by remember(myProfile?.about, settings.cachedAbout) {
         mutableStateOf(myProfile?.about ?: settings.cachedAbout)
     }
     var phoneInput by remember(myProfile?.phoneNumber) { mutableStateOf(myProfile?.phoneNumber ?: "") }
     var backupPassword by remember { mutableStateOf("") }
-    var smsCodeInput by remember { mutableStateOf("") }
 
     var pendingRestoreUri by remember { mutableStateOf<Uri?>(null) }
     var pendingRestoreLocal by remember { mutableStateOf<BackupSummary?>(null) }
@@ -388,17 +391,18 @@ fun BackupAndSettingsScreen(
                                         style = MaterialTheme.typography.titleLarge,
                                         fontWeight = FontWeight.Bold
                                     )
+                                    if (effectiveUsername.isNotBlank()) {
+                                        Text(
+                                            text = "@$effectiveUsername",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
                                     Text(
                                         text = myProfile?.email ?: "UID: ${viewModel.currentUserId.take(12)}…",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                if (myProfile?.phoneVerified == true) {
-                                    Icon(
-                                        Icons.Rounded.Verified,
-                                        contentDescription = "Telefone verificado",
-                                        tint = MaterialTheme.colorScheme.primary
                                     )
                                 }
                             }
@@ -435,8 +439,51 @@ fun BackupAndSettingsScreen(
                                 label = { Text("Nome de exibição") },
                                 singleLine = true,
                                 shape = RoundedCornerShape(16.dp),
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("profile_display_name_input")
                             )
+
+                            val usernameSupport = when (val av = usernameAvailability) {
+                                UsernameAvailability.Idle -> "Identificador único para busca no WhatwillIdo (a-z, 0-9, '.' ou '_')"
+                                is UsernameAvailability.Checking -> "Verificando disponibilidade de @${av.handle}…"
+                                is UsernameAvailability.Available -> "@${av.handle} está disponível!"
+                                is UsernameAvailability.Taken -> "@${av.handle} já está em uso por outro usuário."
+                                is UsernameAvailability.Invalid -> av.reason
+                            }
+                            val usernameIsError = usernameAvailability is UsernameAvailability.Taken ||
+                                usernameAvailability is UsernameAvailability.Invalid
+
+                            OutlinedTextField(
+                                value = usernameInput,
+                                onValueChange = { raw ->
+                                    val sanitized = raw.trimStart('@').lowercase()
+                                    usernameInput = sanitized
+                                    viewModel.checkUsername(sanitized)
+                                },
+                                label = { Text("Nome de usuário (@username)") },
+                                leadingIcon = {
+                                    Icon(Icons.Rounded.AlternateEmail, contentDescription = null)
+                                },
+                                isError = usernameIsError,
+                                supportingText = {
+                                    Text(
+                                        text = usernameSupport,
+                                        color = when (usernameAvailability) {
+                                            is UsernameAvailability.Available -> MaterialTheme.colorScheme.primary
+                                            is UsernameAvailability.Taken,
+                                            is UsernameAvailability.Invalid -> MaterialTheme.colorScheme.error
+                                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                        }
+                                    )
+                                },
+                                singleLine = true,
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("profile_username_input")
+                            )
+
                             OutlinedTextField(
                                 value = about,
                                 onValueChange = { about = it },
@@ -445,45 +492,63 @@ fun BackupAndSettingsScreen(
                                 shape = RoundedCornerShape(16.dp),
                                 modifier = Modifier.fillMaxWidth()
                             )
+
                             OutlinedTextField(
                                 value = phoneInput,
                                 onValueChange = { phoneInput = it },
-                                label = { Text("Telefone (ex: +5511999998888)") },
+                                label = { Text("Telefone (opcional • apenas informativo)") },
                                 singleLine = true,
                                 shape = RoundedCornerShape(16.dp),
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("profile_phone_optional_input")
                             )
 
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                Button(
-                                    onClick = { viewModel.updateProfile(displayName, about, phoneInput) },
-                                    enabled = !isBusy && displayName.isNotBlank(),
-                                    shape = RoundedCornerShape(18.dp),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .heightIn(min = 48.dp)
-                                        .testTag("save_profile_button")
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Text("Salvar Perfil")
+                                    Icon(
+                                        imageVector = Icons.Rounded.Info,
+                                        contentDescription = "Aviso sobre telefone opcional",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Text(
+                                        text = "Telefone não verificado (sem SMS). Campo opcional apenas informativo; sua identidade usa Conta Google + @username.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
                                 }
-                                OutlinedButton(
-                                    onClick = {
-                                        val activity = context as? Activity ?: return@OutlinedButton
-                                        viewModel.startPhoneSmsVerification(activity, phoneInput)
-                                    },
-                                    enabled = !isBusy && phoneInput.isNotBlank(),
-                                    shape = RoundedCornerShape(18.dp),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .heightIn(min = 48.dp)
-                                        .testTag("verify_sms_button")
-                                ) {
-                                    Icon(Icons.Rounded.PhoneAndroid, contentDescription = null, Modifier.size(18.dp))
-                                    Text(" Verificar SMS", modifier = Modifier.padding(start = 4.dp))
-                                }
+                            }
+
+                            Button(
+                                onClick = {
+                                    viewModel.updateProfile(
+                                        displayName = displayName,
+                                        username = usernameInput,
+                                        about = about,
+                                        phoneNumber = phoneInput
+                                    )
+                                },
+                                enabled = !isBusy &&
+                                    displayName.isNotBlank() &&
+                                    usernameInput.isNotBlank() &&
+                                    !usernameIsError &&
+                                    usernameAvailability !is UsernameAvailability.Checking,
+                                shape = RoundedCornerShape(18.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
+                                    .testTag("save_profile_button")
+                            ) {
+                                Text("Salvar Perfil")
                             }
                         }
                     }
@@ -906,7 +971,7 @@ fun BackupAndSettingsScreen(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("Dynamic Color (Papel de parede)", style = MaterialTheme.typography.bodyLarge)
                                 Text(
-                                    "Adapta a paleta do Zap2 às cores do sistema (Android 12+).",
+                                    "Adapta a paleta do WhatwillIdo às cores do sistema (Android 12+).",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -998,7 +1063,7 @@ fun BackupAndSettingsScreen(
                                         Zap2NotificationHelper.showMessageNotification(
                                             context = context,
                                             chatId = null,
-                                            title = "Zap2 Notificações",
+                                            title = "WhatwillIdo Notificações",
                                             body = "Notificações de mensagens e chamadas ativas!",
                                             isTest = true
                                         )
@@ -1050,40 +1115,6 @@ fun BackupAndSettingsScreen(
                 }
             }
         }
-    }
-
-    // SMS Code Dialog
-    if (verificationId != null) {
-        AlertDialog(
-            onDismissRequest = viewModel::cancelSmsVerification,
-            title = { Text("Código de Verificação SMS") },
-            text = {
-                OutlinedTextField(
-                    value = smsCodeInput,
-                    onValueChange = { smsCodeInput = it },
-                    label = { Text("Código de 6 dígitos") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val code = smsCodeInput
-                        smsCodeInput = ""
-                        viewModel.submitSmsCode(code)
-                    },
-                    enabled = smsCodeInput.length >= 4
-                ) {
-                    Text("Verificar")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = viewModel::cancelSmsVerification) {
-                    Text("Cancelar")
-                }
-            }
-        )
     }
 
     // Restore ZIP Password Prompt

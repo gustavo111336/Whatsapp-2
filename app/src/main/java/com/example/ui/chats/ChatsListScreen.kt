@@ -70,6 +70,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.data.model.ChatRoom
+import com.example.data.model.PublicProfile
 import com.example.data.model.UiState
 import com.example.ui.components.Zap2Avatar
 import com.example.ui.components.Zap2ProfileBanner
@@ -86,6 +87,8 @@ fun ChatsListScreen(
 ) {
     val chatsState by viewModel.chatsState.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val discoveredUsers by viewModel.discoveredUsers.collectAsStateWithLifecycle()
+    val isSearchingUsers by viewModel.isSearchingUsers.collectAsStateWithLifecycle()
     val contacts by viewModel.savedContacts.collectAsStateWithLifecycle()
     val actionMessage by viewModel.actionMessage.collectAsStateWithLifecycle()
     val myProfile by viewModel.myProfile.collectAsStateWithLifecycle()
@@ -97,7 +100,9 @@ fun ChatsListScreen(
     val effectivePhotoUrl = myProfile?.photoUrl?.takeIf { it.isNotBlank() }
         ?: userSettings.cachedPhotoUrl.takeIf { it.isNotBlank() }
     val effectiveName = myProfile?.displayName?.takeIf { it.isNotBlank() }
-        ?: userSettings.cachedDisplayName.ifBlank { "Zap2" }
+        ?: userSettings.cachedDisplayName.ifBlank { "WhatwillIdo" }
+    val effectiveUsername = myProfile?.username?.takeIf { it.isNotBlank() }
+        ?: userSettings.cachedUsername.takeIf { it.isNotBlank() }
 
     var showCreateGroup by remember { mutableStateOf(false) }
 
@@ -176,13 +181,23 @@ fun ChatsListScreen(
                                 )
                                 Column {
                                     Text(
-                                        text = "Zap2",
+                                        text = "WhatwillIdo",
                                         style = MaterialTheme.typography.headlineSmall,
                                         fontWeight = FontWeight.Bold,
                                         color = if (hasCustomBanner) Color.White else MaterialTheme.colorScheme.onSurface
                                     )
+                                    val subtitle = buildString {
+                                        if (effectiveName != "WhatwillIdo") {
+                                            append("Olá, $effectiveName")
+                                        } else {
+                                            append("Conectado em tempo real")
+                                        }
+                                        if (!effectiveUsername.isNullOrBlank()) {
+                                            append(" • @$effectiveUsername")
+                                        }
+                                    }
                                     Text(
-                                        text = if (effectiveName != "Zap2") "Olá, $effectiveName" else "Conectado em tempo real",
+                                        text = subtitle,
                                         style = MaterialTheme.typography.bodySmall,
                                         color = if (hasCustomBanner) Color.White.copy(alpha = 0.9f) else MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 1,
@@ -288,32 +303,109 @@ fun ChatsListScreen(
                     }
                 }
                 is UiState.Success -> {
-                    if (state.data.isEmpty()) {
+                    val isSearching = searchQuery.isNotBlank()
+                    val existingDirectPeerUids = state.data.mapNotNull { it.peerUidForDirect(viewModel.currentUserId) }.toSet()
+                    val newDiscoveredUsers = if (isSearching) {
+                        discoveredUsers.filter { it.uid !in existingDirectPeerUids }
+                    } else {
+                        emptyList()
+                    }
+
+                    if (!isSearching && state.data.isEmpty()) {
                         EmptyChatsView(
                             onNewChat = onNavigateToContacts,
                             onCreateGroup = { showCreateGroup = true }
                         )
+                    } else if (isSearching && state.data.isEmpty() && newDiscoveredUsers.isEmpty()) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier.padding(24.dp)
+                            ) {
+                                if (isSearchingUsers) {
+                                    CircularProgressIndicator(modifier = Modifier.size(28.dp))
+                                    Text(
+                                        text = "Buscando pessoas no WhatwillIdo…",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                } else {
+                                    Text(
+                                        text = "Nenhum resultado para \"${searchQuery.trim()}\"",
+                                        style = MaterialTheme.typography.titleMedium
+                                    )
+                                    Text(
+                                        text = "Tente buscar pelo @username, nome ou e-mail exato do Google.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
                     } else {
                         LazyColumn(
                             contentPadding = PaddingValues(top = 8.dp, bottom = 96.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp),
                             modifier = Modifier.fillMaxSize()
                         ) {
-                            items(state.data, key = { it.id }) { chat ->
-                                AnimatedVisibility(
-                                    visible = true,
-                                    enter = fadeIn() + scaleIn(
-                                        initialScale = 0.96f,
-                                        animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                                    )
-                                ) {
-                                    val peerProfile = chat.peerUidForDirect(viewModel.currentUserId)?.let { peerProfiles[it] }
-                                    ChatListCard(
-                                        chat = chat,
-                                        currentUserId = viewModel.currentUserId,
-                                        peerPhotoUrl = peerProfile?.photoUrl,
-                                        peerOnline = peerProfile?.online == true,
-                                        onClick = { onOpenChat(chat.id) }
+                            if (state.data.isNotEmpty()) {
+                                items(state.data, key = { it.id }) { chat ->
+                                    AnimatedVisibility(
+                                        visible = true,
+                                        enter = fadeIn() + scaleIn(
+                                            initialScale = 0.96f,
+                                            animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                                        )
+                                    ) {
+                                        val peerProfile = chat.peerUidForDirect(viewModel.currentUserId)?.let { peerProfiles[it] }
+                                        ChatListCard(
+                                            chat = chat,
+                                            currentUserId = viewModel.currentUserId,
+                                            peerPhotoUrl = peerProfile?.photoUrl,
+                                            peerOnline = peerProfile?.online == true,
+                                            onClick = { onOpenChat(chat.id) }
+                                        )
+                                    }
+                                }
+                            }
+
+                            if (isSearching && (isSearchingUsers || newDiscoveredUsers.isNotEmpty())) {
+                                item(key = "discovered_users_header") {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 8.dp, start = 4.dp, end = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = "Pessoas no WhatwillIdo",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        if (isSearchingUsers) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(16.dp),
+                                                strokeWidth = 2.dp
+                                            )
+                                        }
+                                    }
+                                }
+
+                                items(newDiscoveredUsers, key = { "discover_${it.uid}" }) { profile ->
+                                    DiscoveredUserCard(
+                                        profile = profile,
+                                        onClick = {
+                                            viewModel.startDirectChat(
+                                                peerUid = profile.uid,
+                                                peerName = profile.displayName,
+                                                onChatReady = onOpenChat
+                                            )
+                                        }
                                     )
                                 }
                             }
@@ -508,6 +600,77 @@ private fun ChatListCard(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiscoveredUserCard(
+    profile: PublicProfile,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(22.dp))
+            .clickable(onClick = onClick)
+            .testTag("discovered_user_${profile.uid}"),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Zap2Avatar(
+                name = profile.displayName,
+                photoUrl = profile.photoUrl,
+                online = profile.online,
+                size = 48.dp
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = profile.displayName.ifBlank { "Usuário WhatwillIdo" },
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = buildString {
+                        if (profile.username.isNotBlank()) {
+                            append("@${profile.username}")
+                        }
+                        if (profile.about.isNotBlank()) {
+                            if (isNotEmpty()) append(" • ")
+                            append(profile.about)
+                        }
+                    }.ifBlank { "Toque para conversar" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.primary
+            ) {
+                Text(
+                    text = "Conversar",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                )
             }
         }
     }

@@ -171,7 +171,7 @@ fun ActiveCallScreen(
 
     val peerName = session?.let {
         if (it.callerId == currentUserId) it.calleeName else it.callerName
-    } ?: "Chamada Zap2"
+    } ?: "Chamada WhatwillIdo"
 
     LaunchedEffect(callId, peerName, isVideo) {
         Zap2NotificationHelper.showOngoingCallNotification(

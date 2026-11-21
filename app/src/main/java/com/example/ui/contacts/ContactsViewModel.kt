@@ -1,12 +1,11 @@
 package com.example.ui.contacts
 
-import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.model.ContactEntry
-import com.example.data.model.DeviceContact
 import com.example.data.model.PublicProfile
 import com.example.data.model.UiState
+import com.example.data.model.UserProfile
 import com.example.data.remote.ChatRepository
 import com.example.data.remote.UserAndContactsRepository
 import com.example.data.remote.unwrapFirestoreException
@@ -26,6 +25,14 @@ class ContactsViewModel(
     val currentUserId: String
 ) : ViewModel() {
 
+    val myProfile: StateFlow<UserProfile?> = userRepository.observeMyProfile(currentUserId)
+        .catch { error ->
+            val root = error.unwrapFirestoreException()
+            if (root == error && error is CancellationException) throw error
+            emit(null)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), null)
+
     val savedContactsState: StateFlow<UiState<List<ContactEntry>>> =
         userRepository.observeSavedContacts(currentUserId)
             .map<List<ContactEntry>, UiState<List<ContactEntry>>> { UiState.Success(it) }
@@ -36,77 +43,60 @@ class ContactsViewModel(
             }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
 
-    private val _deviceContacts = MutableStateFlow<List<DeviceContact>>(emptyList())
-    val deviceContacts: StateFlow<List<DeviceContact>> = _deviceContacts.asStateFlow()
+    private val _searchResults = MutableStateFlow<List<PublicProfile>>(emptyList())
+    val searchResults: StateFlow<List<PublicProfile>> = _searchResults.asStateFlow()
 
-    private val _isSyncingDevice = MutableStateFlow(false)
-    val isSyncingDevice: StateFlow<Boolean> = _isSyncingDevice.asStateFlow()
+    private val _isSearching = MutableStateFlow(false)
+    val isSearching: StateFlow<Boolean> = _isSearching.asStateFlow()
 
-    private val _searchResult = MutableStateFlow<PublicProfile?>(null)
-    val searchResult: StateFlow<PublicProfile?> = _searchResult.asStateFlow()
+    private val _hasSearched = MutableStateFlow(false)
+    val hasSearched: StateFlow<Boolean> = _hasSearched.asStateFlow()
 
     private val _feedback = MutableStateFlow<String?>(null)
     val feedback: StateFlow<String?> = _feedback.asStateFlow()
 
-    private val myName = MutableStateFlow("Você")
-
-    init {
-        viewModelScope.launch {
-            userRepository.observeMyProfile(currentUserId)
-                .catch { }
-                .collect { profile ->
-                    if (profile != null && profile.displayName.isNotBlank()) {
-                        myName.value = profile.displayName
-                    }
-                }
+    fun searchUsers(query: String) {
+        val trimmed = query.trim()
+        if (trimmed.isBlank()) {
+            _searchResults.value = emptyList()
+            _hasSearched.value = false
+            return
         }
-    }
-
-    fun syncDevicePhonebook(context: Context) {
         viewModelScope.launch {
-            _isSyncingDevice.value = true
-            userRepository.readAndMatchDeviceContacts(context)
+            _isSearching.value = true
+            _hasSearched.value = true
+            userRepository.searchUsers(trimmed)
                 .onSuccess { list ->
-                    _deviceContacts.value = list
-                    val registeredCount = list.count { it.registeredUid != null }
-                    _feedback.value = "${list.size} contatos lidos da agenda ($registeredCount no Zap2)."
+                    _searchResults.value = list
                 }
                 .onFailure { err ->
-                    _feedback.value = err.localizedMessage ?: "Falha ao ler agenda do dispositivo."
+                    _searchResults.value = emptyList()
+                    _feedback.value = err.localizedMessage ?: "Erro ao buscar usuários."
                 }
-            _isSyncingDevice.value = false
-        }
-    }
-
-    fun searchUserByPhoneOrId(query: String) {
-        viewModelScope.launch {
-            _searchResult.value = null
-            userRepository.findUserByPhoneOrId(query)
-                .onSuccess { profile ->
-                    _searchResult.value = profile
-                }
-                .onFailure { err ->
-                    _feedback.value = err.localizedMessage ?: "Usuário não encontrado."
-                }
+            _isSearching.value = false
         }
     }
 
     fun saveAndOpenChat(
-        peerUid: String,
-        displayName: String,
-        phoneNumber: String?,
-        photoUrl: String?,
+        profile: PublicProfile,
+        customAlias: String = "",
         onChatReady: (String) -> Unit
     ) {
+        val myName = myProfile.value?.displayName?.takeIf { it.isNotBlank() } ?: "Você"
+        val finalName = customAlias.trim().ifBlank { profile.displayName }
         viewModelScope.launch {
-            userRepository.addContact(peerUid, displayName, phoneNumber, photoUrl)
-                .onFailure { err ->
-                    _feedback.value = err.localizedMessage ?: "Erro ao salvar contato."
-                    return@launch
-                }
-            chatRepository.getOrCreateDirectChat(myName.value, peerUid, displayName)
+            userRepository.addContact(
+                peerUid = profile.uid,
+                displayName = finalName,
+                username = profile.username.takeIf { it.isNotBlank() },
+                photoUrl = profile.photoUrl
+            ).onFailure { err ->
+                _feedback.value = err.localizedMessage ?: "Erro ao salvar contato."
+                return@launch
+            }
+            chatRepository.getOrCreateDirectChat(myName, profile.uid, finalName)
                 .onSuccess { chatId ->
-                    _searchResult.value = null
+                    clearSearchResults()
                     onChatReady(chatId)
                 }
                 .onFailure { err ->
@@ -116,9 +106,10 @@ class ContactsViewModel(
     }
 
     fun openChatWithContact(contact: ContactEntry, onChatReady: (String) -> Unit) {
+        val myName = myProfile.value?.displayName?.takeIf { it.isNotBlank() } ?: "Você"
         viewModelScope.launch {
             chatRepository.getOrCreateDirectChat(
-                currentUserName = myName.value,
+                currentUserName = myName,
                 peerUid = contact.peerUid,
                 peerName = contact.displayName
             ).onSuccess(onChatReady)
@@ -137,11 +128,16 @@ class ContactsViewModel(
         }
     }
 
+    fun showFeedback(message: String) {
+        _feedback.value = message
+    }
+
     fun clearFeedback() {
         _feedback.value = null
     }
 
-    fun clearSearchResult() {
-        _searchResult.value = null
+    fun clearSearchResults() {
+        _searchResults.value = emptyList()
+        _hasSearched.value = false
     }
 }

@@ -56,16 +56,44 @@ test("Unauthenticated users cannot read or write any collection", async () => {
   );
 });
 
-test("PII isolation: users/{uid} is strictly owner-only while public_profiles/{uid} allows get only", async () => {
-  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
-  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+test("PII isolation, unique @username claim, exact email lookup, and disabled phone_lookup", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID, {
+    email: "alice@example.com",
+    email_verified: true,
+  }).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID, {
+    email: "bob@example.com",
+    email_verified: true,
+  }).firestore();
+  const unverifiedBobDb = testEnv.authenticatedContext(BOB_UID, {
+    email: "alice@example.com",
+    email_verified: false,
+  }).firestore();
   const past = new Date(Date.now() - 2000);
 
+  // Reject creating user with phoneVerified: true
+  await assertFails(
+    aliceDb.collection("users").doc(ALICE_UID).set({
+      uid: ALICE_UID,
+      username: "alice.silva",
+      displayName: "Alice Silva",
+      phoneNumber: "+5511999998888",
+      phoneVerified: true,
+      email: "alice@example.com",
+      online: true,
+      createdAt: past,
+      updatedAt: past,
+    })
+  );
+
+  // Alice creates private user document with phoneVerified: false (phone optional/informative)
   await assertSucceeds(
     aliceDb.collection("users").doc(ALICE_UID).set({
       uid: ALICE_UID,
+      username: "alice.silva",
       displayName: "Alice Silva",
       phoneNumber: "+5511999998888",
+      phoneVerified: false,
       email: "alice@example.com",
       online: true,
       lastSeen: past,
@@ -74,48 +102,128 @@ test("PII isolation: users/{uid} is strictly owner-only while public_profiles/{u
     })
   );
 
-  // Bob cannot read or list Alice's private user document
+  // Bob cannot read, list, or edit Alice's private user document
   await assertFails(bobDb.collection("users").doc(ALICE_UID).get());
   await assertFails(bobDb.collection("users").get());
-
-  // Alice writes public_profile (including animated photoUrl & bannerUrl) and phone_lookup
-  await assertSucceeds(
-    aliceDb.collection("users").doc(ALICE_UID).update({
-      photoUrl: "https://cdn.example.com/alice_avatar.mp4",
-      bannerUrl: "https://cdn.example.com/alice_banner.jpg",
-      updatedAt: new Date(Date.now() - 1200),
-    })
-  );
-  await assertSucceeds(
-    aliceDb.collection("public_profiles").doc(ALICE_UID).set({
-      uid: ALICE_UID,
-      displayName: "Alice Silva",
-      about: "Disponível no Zap2",
-      photoUrl: "https://cdn.example.com/alice_avatar.mp4",
-      bannerUrl: "https://cdn.example.com/alice_banner.jpg",
-      online: true,
-      lastSeen: past,
+  await assertFails(
+    bobDb.collection("users").doc(ALICE_UID).update({
+      username: "hacked",
       updatedAt: past,
     })
   );
+
+  // Alice atomically claims username_lookup + public_profiles + email_lookup
+  const batch = aliceDb.batch();
+  batch.set(aliceDb.collection("username_lookup").doc("alice.silva"), {
+    uid: ALICE_UID,
+    username: "alice.silva",
+    displayName: "Alice Silva",
+    photoUrl: "https://cdn.example.com/alice_avatar.mp4",
+    updatedAt: past,
+  });
+  batch.set(aliceDb.collection("public_profiles").doc(ALICE_UID), {
+    uid: ALICE_UID,
+    username: "alice.silva",
+    displayName: "Alice Silva",
+    displayNameLower: "alice silva",
+    about: "Disponível no Zap2",
+    photoUrl: "https://cdn.example.com/alice_avatar.mp4",
+    bannerUrl: "https://cdn.example.com/alice_banner.jpg",
+    online: true,
+    lastSeen: past,
+    updatedAt: past,
+  });
+  batch.set(aliceDb.collection("email_lookup").doc("alice@example.com"), {
+    uid: ALICE_UID,
+    username: "alice.silva",
+    displayName: "Alice Silva",
+    photoUrl: "https://cdn.example.com/alice_avatar.mp4",
+    updatedAt: past,
+  });
+  await assertSucceeds(batch.commit());
+
+  // Bob cannot hijack Alice's username in username_lookup or public_profiles
+  await assertFails(
+    bobDb.collection("username_lookup").doc("alice.silva").set({
+      uid: BOB_UID,
+      username: "alice.silva",
+      displayName: "Fake Alice",
+      updatedAt: past,
+    })
+  );
+  await assertFails(
+    bobDb.collection("public_profiles").doc(BOB_UID).set({
+      uid: BOB_UID,
+      username: "alice.silva",
+      displayName: "Fake Alice",
+      displayNameLower: "fake alice",
+      online: true,
+      updatedAt: past,
+    })
+  );
+  await assertFails(
+    bobDb.collection("public_profiles").doc(ALICE_UID).update({
+      displayName: "Hacked Alice",
+      updatedAt: past,
+    })
+  );
+
+  // Unverified email token or another user's email cannot claim email_lookup
+  await assertFails(
+    unverifiedBobDb.collection("email_lookup").doc("alice@example.com").set({
+      uid: BOB_UID,
+      displayName: "Fake Alice",
+      updatedAt: past,
+    })
+  );
+  await assertFails(
+    bobDb.collection("email_lookup").doc("alice@example.com").set({
+      uid: BOB_UID,
+      displayName: "Fake Alice",
+      updatedAt: past,
+    })
+  );
+
+  // Bob CAN search public_profiles by username / name prefix, exact-get username_lookup & email_lookup,
+  // but CANNOT list/scrape username_lookup or email_lookup
+  await assertSucceeds(bobDb.collection("public_profiles").doc(ALICE_UID).get());
   await assertSucceeds(
+    bobDb.collection("public_profiles")
+      .where("username", ">=", "alice")
+      .where("username", "<=", "alice\uf8ff")
+      .get()
+  );
+  await assertSucceeds(
+    bobDb.collection("public_profiles")
+      .where("displayNameLower", ">=", "alice")
+      .where("displayNameLower", "<=", "alice\uf8ff")
+      .get()
+  );
+  await assertSucceeds(bobDb.collection("username_lookup").doc("alice.silva").get());
+  await assertFails(bobDb.collection("username_lookup").get());
+  await assertSucceeds(bobDb.collection("email_lookup").doc("alice@example.com").get());
+  await assertFails(bobDb.collection("email_lookup").get());
+
+  // Legacy phone_lookup is completely blocked
+  await assertFails(
     aliceDb.collection("phone_lookup").doc("5511999998888").set({
       uid: ALICE_UID,
       displayName: "Alice Silva",
       updatedAt: past,
     })
   );
+  await assertFails(bobDb.collection("phone_lookup").doc("5511999998888").get());
 
-  // Bob can get exact public_profile and exact phone_lookup, but CANNOT list either collection
-  await assertSucceeds(bobDb.collection("public_profiles").doc(ALICE_UID).get());
-  await assertFails(bobDb.collection("public_profiles").get());
-  await assertSucceeds(bobDb.collection("phone_lookup").doc("5511999998888").get());
-  await assertFails(bobDb.collection("phone_lookup").get());
-
-  // Reject ghost fields and future timestamps
+  // Reject ghost fields, phoneVerified=true updates, and future timestamps
   await assertFails(
     aliceDb.collection("users").doc(ALICE_UID).update({
       isAdmin: true,
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+  await assertFails(
+    aliceDb.collection("users").doc(ALICE_UID).update({
+      phoneVerified: true,
       updatedAt: new Date(Date.now() - 1000),
     })
   );
@@ -127,7 +235,7 @@ test("PII isolation: users/{uid} is strictly owner-only while public_profiles/{u
   );
 });
 
-test("Contacts subcollection is isolated per owner", async () => {
+test("Contacts subcollection supports @username and is isolated per owner", async () => {
   const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
   const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
   const past = new Date(Date.now() - 2000);
@@ -136,8 +244,8 @@ test("Contacts subcollection is isolated per owner", async () => {
     aliceDb.collection("users").doc(ALICE_UID).collection("contacts").doc("contact_bob").set({
       ownerId: ALICE_UID,
       peerUid: BOB_UID,
+      username: "bob.dev",
       displayName: "Bob",
-      phoneNumber: "5511988887777",
       createdAt: past,
       updatedAt: past,
     })
@@ -150,6 +258,7 @@ test("Contacts subcollection is isolated per owner", async () => {
   await assertSucceeds(
     aliceDb.collection("users").doc(ALICE_UID).collection("contacts").doc("contact_bob").update({
       peerUid: BOB_UID,
+      username: "bob.dev",
       displayName: "Bob Atualizado",
       updatedAt: new Date(Date.now() - 500),
     })

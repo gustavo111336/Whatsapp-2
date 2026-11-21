@@ -298,7 +298,7 @@ class ChatRepository(
         if (cleanPeerUid.isBlank()) {
             return Result.failure(IllegalArgumentException("Contato inválido para iniciar conversa."))
         }
-        val safePeerName = peerName.trim().take(100).ifBlank { "Contato Zap2" }
+        val safePeerName = peerName.trim().take(100).ifBlank { "Contato WhatwillIdo" }
         val sorted = listOf(uid, cleanPeerUid).sorted()
         val chatId = "direct_${sorted[0]}_${sorted[1]}".take(128)
         val docPath = "chats/$chatId"

@@ -112,6 +112,7 @@ class BackupRepository(
                     val remoteSnap = runCatching { db.collection("users").document(uid).get().await() }.getOrNull()
                     val profileBackup = ProfileBackupData(
                         uid = uid,
+                        username = remoteSnap?.getString("username") ?: cachedSettings.cachedUsername,
                         displayName = remoteSnap?.getString("displayName") ?: cachedSettings.cachedDisplayName,
                         about = remoteSnap?.getString("about") ?: cachedSettings.cachedAbout,
                         photoUrl = remoteSnap?.getString("photoUrl")
@@ -221,7 +222,7 @@ class BackupRepository(
                 val manifestFile = File(extractDir, "backup_manifest.json")
                 if (!manifestFile.exists()) {
                     return@withContext Result.failure(
-                        IllegalStateException("Arquivo não contém backup_manifest.json válido do Zap2.")
+                        IllegalStateException("Arquivo não contém backup_manifest.json válido do WhatwillIdo.")
                     )
                 }
                 val manifest = json.decodeFromString<BackupManifest>(manifestFile.readText())
@@ -280,7 +281,8 @@ class BackupRepository(
                                 "updatedAt" to FieldValue.serverTimestamp()
                             )
                             if (restoredProfile.displayName.isNotBlank()) {
-                                profileUpdates["displayName"] = restoredProfile.displayName.take(80)
+                                val cleanName = restoredProfile.displayName.take(80)
+                                profileUpdates["displayName"] = cleanName
                             }
                             if (restoredProfile.about.isNotBlank()) {
                                 profileUpdates["about"] = restoredProfile.about.take(160)
@@ -288,10 +290,16 @@ class BackupRepository(
                             restoredProfile.photoUrl?.take(2048)?.let { profileUpdates["photoUrl"] = it }
                             restoredProfile.bannerUrl?.take(2048)?.let { profileUpdates["bannerUrl"] = it }
 
+                            val publicUpdates = profileUpdates.toMutableMap()
+                            publicUpdates["uid"] = currentUid
+                            if (restoredProfile.displayName.isNotBlank()) {
+                                publicUpdates["displayNameLower"] = restoredProfile.displayName.take(80).lowercase()
+                            }
+
                             runCatching {
                                 db.collection("users").document(currentUid).update(profileUpdates).await()
                                 db.collection("public_profiles").document(currentUid)
-                                    .set(profileUpdates + mapOf("uid" to currentUid), SetOptions.merge())
+                                    .set(publicUpdates, SetOptions.merge())
                                     .await()
                             }
                         }

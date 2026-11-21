@@ -1,12 +1,8 @@
 package com.example.ui.contacts
 
-import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.pm.PackageManager
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,6 +11,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -22,14 +19,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AlternateEmail
 import androidx.compose.material.icons.rounded.ChatBubble
-import androidx.compose.material.icons.rounded.Contacts
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.PersonAdd
 import androidx.compose.material.icons.rounded.PersonSearch
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -55,10 +51,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.model.ContactEntry
-import com.example.data.model.DeviceContact
+import com.example.data.model.PublicProfile
 import com.example.data.model.UiState
 import com.example.ui.components.Zap2Avatar
 
@@ -69,23 +64,20 @@ fun ContactsScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val myProfile by viewModel.myProfile.collectAsStateWithLifecycle()
     val savedContactsState by viewModel.savedContactsState.collectAsStateWithLifecycle()
-    val deviceContacts by viewModel.deviceContacts.collectAsStateWithLifecycle()
-    val isSyncing by viewModel.isSyncingDevice.collectAsStateWithLifecycle()
-    val searchResult by viewModel.searchResult.collectAsStateWithLifecycle()
+    val searchResults by viewModel.searchResults.collectAsStateWithLifecycle()
+    val isSearching by viewModel.isSearching.collectAsStateWithLifecycle()
+    val hasSearched by viewModel.hasSearched.collectAsStateWithLifecycle()
     val feedback by viewModel.feedback.collectAsStateWithLifecycle()
 
     var showAddDialog by remember { mutableStateOf(false) }
     var searchInput by remember { mutableStateOf("") }
+    var selectedCandidate by remember { mutableStateOf<PublicProfile?>(null) }
     var customAlias by remember { mutableStateOf("") }
 
-    val contactsPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            viewModel.syncDevicePhonebook(context)
-        }
-    }
+    val myHandleDisplay = myProfile?.username?.takeIf { it.isNotBlank() }?.let { "@$it" }
+        ?: viewModel.currentUserId
 
     Box(
         modifier = modifier.fillMaxSize(),
@@ -110,66 +102,65 @@ fun ContactsScreen(
                     fontWeight = FontWeight.Bold
                 )
                 FilledTonalButton(
-                    onClick = {
-                        val hasPermission = ContextCompat.checkSelfPermission(
-                            context,
-                            Manifest.permission.READ_CONTACTS
-                        ) == PackageManager.PERMISSION_GRANTED
-                        if (hasPermission) {
-                            viewModel.syncDevicePhonebook(context)
-                        } else {
-                            contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
-                        }
-                    },
+                    onClick = { showAddDialog = true },
                     shape = RoundedCornerShape(20.dp),
-                    modifier = Modifier.testTag("sync_device_contacts_button")
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("open_search_user_button")
                 ) {
-                    if (isSyncing) {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    } else {
-                        Icon(Icons.Rounded.Contacts, contentDescription = null, Modifier.size(18.dp))
-                    }
-                    Text(" Agenda", modifier = Modifier.padding(start = 6.dp))
+                    Icon(Icons.Rounded.PersonSearch, contentDescription = null, Modifier.size(18.dp))
+                    Text(" Buscar @user", modifier = Modifier.padding(start = 6.dp))
                 }
             }
 
-            // My Zap2 ID sharing card
+            // My @username sharing card
             Surface(
                 shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f),
+                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 10.dp)
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Seu ID no Zap2 (compartilhe para ser adicionado):",
+                            text = "Seu @username no WhatwillIdo (compartilhe para ser encontrado):",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSecondaryContainer
                         )
                         Text(
-                            text = viewModel.currentUserId,
-                            style = MaterialTheme.typography.labelSmall,
+                            text = myHandleDisplay,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             color = MaterialTheme.colorScheme.onSecondaryContainer
                         )
+                        myProfile?.email?.takeIf { it.isNotBlank() }?.let { email ->
+                            Text(
+                                text = "Google: $email",
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
+                            )
+                        }
                     }
                     IconButton(
                         onClick = {
                             val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            cb.setPrimaryClip(ClipData.newPlainText("Zap2 ID", viewModel.currentUserId))
+                            cb.setPrimaryClip(ClipData.newPlainText("WhatwillIdo @username", myHandleDisplay))
+                            viewModel.showFeedback("$myHandleDisplay copiado!")
                         },
-                        modifier = Modifier.testTag("copy_my_id_button")
+                        modifier = Modifier.testTag("copy_my_username_button")
                     ) {
                         Icon(
                             Icons.Rounded.ContentCopy,
-                            contentDescription = "Copiar meu ID",
+                            contentDescription = "Copiar meu @username",
                             tint = MaterialTheme.colorScheme.onSecondaryContainer
                         )
                     }
@@ -201,7 +192,7 @@ fun ContactsScreen(
             ) {
                 item {
                     Text(
-                        text = "Contatos Salvos no Zap2",
+                        text = "Contatos Salvos no WhatwillIdo",
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -233,7 +224,7 @@ fun ContactsScreen(
                         if (state.data.isEmpty()) {
                             item {
                                 Text(
-                                    text = "Nenhum contato adicionado ainda. Toque em + para buscar por telefone ou ID.",
+                                    text = "Nenhum contato adicionado ainda. Toque em + para buscar por @username, nome ou e-mail exato.",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(vertical = 8.dp)
@@ -248,32 +239,6 @@ fun ContactsScreen(
                                 )
                             }
                         }
-                    }
-                }
-
-                if (deviceContacts.isNotEmpty()) {
-                    item {
-                        Text(
-                            text = "Agenda do Dispositivo",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(top = 12.dp)
-                        )
-                    }
-                    items(deviceContacts, key = { "${it.lookupId}_${it.normalizedDigits}" }) { dc ->
-                        DeviceContactRow(
-                            contact = dc,
-                            onAddAndChat = {
-                                val uid = dc.registeredUid ?: return@DeviceContactRow
-                                viewModel.saveAndOpenChat(
-                                    peerUid = uid,
-                                    displayName = dc.name,
-                                    phoneNumber = dc.rawPhone,
-                                    photoUrl = dc.registeredPhotoUrl,
-                                    onChatReady = onOpenChat
-                                )
-                            }
-                        )
                     }
                 }
             }
@@ -296,16 +261,24 @@ fun ContactsScreen(
         AlertDialog(
             onDismissRequest = {
                 showAddDialog = false
-                viewModel.clearSearchResult()
+                selectedCandidate = null
+                customAlias = ""
+                viewModel.clearSearchResults()
             },
             shape = RoundedCornerShape(28.dp),
-            title = { Text("Adicionar Contato no Zap2") },
+            title = { Text("Adicionar Contato no WhatwillIdo") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(
                         value = searchInput,
-                        onValueChange = { searchInput = it },
-                        label = { Text("Telefone (com DDD) ou ID Zap2") },
+                        onValueChange = {
+                            searchInput = it
+                            selectedCandidate = null
+                        },
+                        label = { Text("@username, nome ou e-mail exato") },
+                        leadingIcon = {
+                            Icon(Icons.Rounded.AlternateEmail, contentDescription = null)
+                        },
                         singleLine = true,
                         shape = RoundedCornerShape(16.dp),
                         modifier = Modifier
@@ -313,17 +286,31 @@ fun ContactsScreen(
                             .testTag("search_contact_input")
                     )
                     Button(
-                        onClick = { viewModel.searchUserByPhoneOrId(searchInput) },
+                        onClick = {
+                            selectedCandidate = null
+                            viewModel.searchUsers(searchInput)
+                        },
+                        enabled = !isSearching && searchInput.isNotBlank(),
                         shape = RoundedCornerShape(16.dp),
                         modifier = Modifier
                             .fillMaxWidth()
+                            .heightIn(min = 48.dp)
                             .testTag("search_contact_button")
                     ) {
-                        Icon(Icons.Rounded.PersonSearch, contentDescription = null)
-                        Text(" Buscar no Firebase", modifier = Modifier.padding(start = 6.dp))
+                        if (isSearching) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary
+                            )
+                        } else {
+                            Icon(Icons.Rounded.PersonSearch, contentDescription = null)
+                        }
+                        Text(" Buscar no WhatwillIdo", modifier = Modifier.padding(start = 6.dp))
                     }
 
-                    searchResult?.let { found ->
+                    val picked = selectedCandidate
+                    if (picked != null) {
                         Card(
                             shape = RoundedCornerShape(20.dp),
                             colors = CardDefaults.cardColors(
@@ -339,18 +326,25 @@ fun ContactsScreen(
                                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
                                     Zap2Avatar(
-                                        name = found.displayName,
-                                        photoUrl = found.photoUrl,
-                                        online = found.online,
+                                        name = picked.displayName,
+                                        photoUrl = picked.photoUrl,
+                                        online = picked.online,
                                         size = 44.dp
                                     )
                                     Column {
                                         Text(
-                                            text = found.displayName,
+                                            text = picked.displayName,
                                             style = MaterialTheme.typography.titleMedium
                                         )
+                                        if (picked.username.isNotBlank()) {
+                                            Text(
+                                                text = "@${picked.username}",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
                                         Text(
-                                            text = found.about,
+                                            text = picked.about,
                                             style = MaterialTheme.typography.bodySmall,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
@@ -367,24 +361,96 @@ fun ContactsScreen(
                                 )
                                 Button(
                                     onClick = {
-                                        val finalName = customAlias.trim().ifBlank { found.displayName }
                                         showAddDialog = false
+                                        val alias = customAlias
+                                        selectedCandidate = null
+                                        customAlias = ""
                                         viewModel.saveAndOpenChat(
-                                            peerUid = found.uid,
-                                            displayName = finalName,
-                                            phoneNumber = searchInput.takeIf { it.any(Char::isDigit) },
-                                            photoUrl = found.photoUrl,
+                                            profile = picked,
+                                            customAlias = alias,
                                             onChatReady = onOpenChat
                                         )
                                     },
+                                    shape = RoundedCornerShape(14.dp),
                                     modifier = Modifier
                                         .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
                                         .testTag("save_contact_and_chat_button")
                                 ) {
                                     Text("Salvar e Conversar")
                                 }
                             }
                         }
+                    } else if (searchResults.isNotEmpty()) {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 240.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(searchResults, key = { it.uid }) { candidate ->
+                                Card(
+                                    shape = RoundedCornerShape(18.dp),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            selectedCandidate = candidate
+                                            customAlias = ""
+                                        }
+                                        .testTag("search_result_${candidate.uid}")
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Zap2Avatar(
+                                            name = candidate.displayName,
+                                            photoUrl = candidate.photoUrl,
+                                            online = candidate.online,
+                                            size = 42.dp
+                                        )
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = candidate.displayName,
+                                                style = MaterialTheme.typography.titleSmall,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = candidate.username.takeIf { it.isNotBlank() }?.let { "@$it" }
+                                                    ?: "UID: ${candidate.uid.take(10)}…",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                        TextButton(
+                                            onClick = {
+                                                showAddDialog = false
+                                                viewModel.saveAndOpenChat(
+                                                    profile = candidate,
+                                                    customAlias = "",
+                                                    onChatReady = onOpenChat
+                                                )
+                                            }
+                                        ) {
+                                            Text("Conversar")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else if (hasSearched && !isSearching) {
+                        Text(
+                            text = "Nenhum usuário encontrado para \"$searchInput\". Tente @username, nome ou o e-mail exato do Google.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             },
@@ -392,7 +458,9 @@ fun ContactsScreen(
             dismissButton = {
                 TextButton(onClick = {
                     showAddDialog = false
-                    viewModel.clearSearchResult()
+                    selectedCandidate = null
+                    customAlias = ""
+                    viewModel.clearSearchResults()
                 }) {
                     Text("Fechar")
                 }
@@ -436,8 +504,11 @@ private fun SavedContactRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                val subtitle = contact.username?.takeIf { it.isNotBlank() }?.let { "@$it" }
+                    ?: contact.phoneNumber?.takeIf { it.isNotBlank() }
+                    ?: "ID: ${contact.peerUid.take(12)}…"
                 Text(
-                    text = contact.phoneNumber?.takeIf { it.isNotBlank() } ?: "ID: ${contact.peerUid.take(12)}…",
+                    text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -454,57 +525,6 @@ private fun SavedContactRow(
                     Icons.Rounded.DeleteOutline,
                     contentDescription = "Remover contato",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun DeviceContactRow(
-    contact: DeviceContact,
-    onAddAndChat: () -> Unit
-) {
-    val isRegistered = contact.registeredUid != null
-    Card(
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest
-        ),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Zap2Avatar(
-                name = contact.name,
-                photoUrl = contact.registeredPhotoUrl,
-                size = 44.dp
-            )
-            Column(modifier = Modifier.weight(1f)) {
-                Text(contact.name, style = MaterialTheme.typography.titleSmall)
-                Text(
-                    text = contact.rawPhone,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            if (isRegistered) {
-                Button(
-                    onClick = onAddAndChat,
-                    shape = RoundedCornerShape(16.dp)
-                ) {
-                    Text("Conversar")
-                }
-            } else {
-                AssistChip(
-                    onClick = {},
-                    enabled = false,
-                    label = { Text("Sem Zap2") }
                 )
             }
         }

@@ -122,7 +122,7 @@ class Zap2Application : Application(), ImageLoaderFactory {
                 getString(R.string.notification_channel_messages),
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Alertas de novas mensagens recebidas no Zap2"
+                description = "Alertas de novas mensagens recebidas no WhatwillIdo"
                 enableVibration(true)
                 enableLights(true)
                 lockscreenVisibility = Notification.VISIBILITY_PRIVATE

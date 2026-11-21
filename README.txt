@@ -1,4 +1,4 @@
-Zap2 - Guia rápido para gerar e baixar o APK pelo GitHub Actions
+WhatwillIdo - Guia rápido para gerar e baixar o APK pelo GitHub Actions
 
 1. Enviar para o GitHub
 - No AI Studio, utilize "Push to GitHub" para enviar o projeto ao seu repositório.
@@ -13,10 +13,9 @@ Como o AI Studio não envia app/google-services.json nem a debug.keystore para o
 3. Gerar e baixar o APK pelo celular
 - No repositório do GitHub, abra a aba Actions.
 - Selecione "Build Debug APK" (ou toque em "Re-run all jobs" / "Run workflow").
-- Quando finalizar com status verde, abra a execução, role até "Artifacts" e baixe "Zap2-debug-apk".
+- Quando finalizar com status verde, abra a execução, role até "Artifacts" e baixe "WhatwillIdo-debug-apk" (ou baixe direto na aba Releases).
 - Extraia o .zip no celular e instale o app-debug.apk.
 
 Observações sobre o Firebase
 - Projeto Firebase: gen-lang-client-0742244432
 - Produtos configurados automaticamente: Firebase Auth (Google Sign-In) e Cloud Firestore.
-- Produtos extras que exigem ativação manual no Console do Firebase (se usados): Phone Auth (SMS), Firebase Storage e FCM.

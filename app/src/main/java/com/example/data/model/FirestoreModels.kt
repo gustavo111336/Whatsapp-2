@@ -11,8 +11,9 @@ import com.google.firebase.firestore.ServerTimestamp
 data class UserProfile(
     @DocumentId val id: String = "",
     val uid: String = "",
+    val username: String = "",
     val displayName: String = "",
-    val about: String = "Disponível no Zap2",
+    val about: String = "Disponível no WhatwillIdo",
     val phoneNumber: String? = null,
     val phoneVerified: Boolean = false,
     val email: String? = null,
@@ -32,8 +33,10 @@ data class UserProfile(
 data class PublicProfile(
     @DocumentId val id: String = "",
     val uid: String = "",
+    val username: String = "",
     val displayName: String = "",
-    val about: String = "Disponível no Zap2",
+    val displayNameLower: String = "",
+    val about: String = "Disponível no WhatwillIdo",
     val photoUrl: String? = null,
     val bannerUrl: String? = null,
     val online: Boolean = false,
@@ -43,9 +46,21 @@ data class PublicProfile(
 
 @Keep
 @IgnoreExtraProperties
-data class PhoneLookup(
+data class UsernameLookup(
     @DocumentId val id: String = "",
     val uid: String = "",
+    val username: String = "",
+    val displayName: String = "",
+    val photoUrl: String? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+)
+
+@Keep
+@IgnoreExtraProperties
+data class EmailLookup(
+    @DocumentId val id: String = "",
+    val uid: String = "",
+    val username: String = "",
     val displayName: String = "",
     val photoUrl: String? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
@@ -57,6 +72,7 @@ data class ContactEntry(
     @DocumentId val id: String = "",
     val ownerId: String = "",
     val peerUid: String = "",
+    val username: String? = null,
     val displayName: String = "",
     val phoneNumber: String? = null,
     val photoUrl: String? = null,
@@ -84,10 +100,10 @@ data class ChatRoom(
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
     fun resolveDisplayTitle(currentUserId: String): String {
-        if (chatType == "GROUP") return title.ifBlank { "Grupo Zap2" }
+        if (chatType == "GROUP") return title.ifBlank { "Grupo WhatwillIdo" }
         val peerUid = participantUids.firstOrNull { it != currentUserId }
         return if (peerUid != null) {
-            participantNames[peerUid]?.takeIf { it.isNotBlank() } ?: title.ifBlank { "Contato Zap2" }
+            participantNames[peerUid]?.takeIf { it.isNotBlank() } ?: title.ifBlank { "Contato WhatwillIdo" }
         } else {
             title.ifBlank { "Notas Pessoais" }
         }

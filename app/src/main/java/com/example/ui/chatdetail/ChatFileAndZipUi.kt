@@ -532,7 +532,7 @@ fun ApkInstallPermissionDialog(
         title = { Text("Permissão para instalar APK") },
         text = {
             Text(
-                text = "Para instalar aplicativos enviados no chat, autorize \"Instalar apps desconhecidos\" para o Zap2 nas configurações do Android.",
+                text = "Para instalar aplicativos enviados no chat, autorize \"Instalar apps desconhecidos\" para o WhatwillIdo nas configurações do Android.",
                 style = MaterialTheme.typography.bodyMedium
             )
         },

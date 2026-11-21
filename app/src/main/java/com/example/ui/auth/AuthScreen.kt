@@ -113,7 +113,7 @@ fun AuthScreen(
                     ) {
                         Image(
                             painter = painterResource(id = R.drawable.img_welcome_hero),
-                            contentDescription = "Arte de boas-vindas do Zap2",
+                            contentDescription = "Arte de boas-vindas do WhatwillIdo",
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize()
                         )
@@ -144,7 +144,7 @@ fun AuthScreen(
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
                                         imageVector = Icons.Rounded.Bolt,
-                                        contentDescription = "Logo Zap2",
+                                        contentDescription = "Logo WhatwillIdo",
                                         tint = MaterialTheme.colorScheme.onPrimary,
                                         modifier = Modifier.size(30.dp)
                                     )

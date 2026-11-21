@@ -1,6 +1,5 @@
 package com.example.ui.backup
 
-import android.app.Activity
 import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
@@ -13,11 +12,11 @@ import com.example.data.model.UserProfile
 import com.example.data.remote.AuthRepository
 import com.example.data.remote.BackupRepository
 import com.example.data.remote.FreeMediaStorageManager
-import com.example.data.remote.PhoneVerificationEvent
 import com.example.data.remote.UserAndContactsRepository
 import com.example.data.remote.unwrapFirestoreException
-import com.google.firebase.auth.PhoneAuthProvider
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -26,6 +25,14 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
+
+sealed interface UsernameAvailability {
+    data object Idle : UsernameAvailability
+    data class Checking(val handle: String) : UsernameAvailability
+    data class Available(val handle: String) : UsernameAvailability
+    data class Taken(val handle: String) : UsernameAvailability
+    data class Invalid(val reason: String) : UsernameAvailability
+}
 
 class BackupViewModel(
     private val authRepository: AuthRepository,
@@ -59,14 +66,13 @@ class BackupViewModel(
     private val _pendingExportFile = MutableStateFlow<File?>(null)
     val pendingExportFile: StateFlow<File?> = _pendingExportFile.asStateFlow()
 
-    private val _verificationId = MutableStateFlow<String?>(null)
-    val verificationId: StateFlow<String?> = _verificationId.asStateFlow()
-
     private val _mediaUploadProgress = MutableStateFlow<Float?>(null)
     val mediaUploadProgress: StateFlow<Float?> = _mediaUploadProgress.asStateFlow()
 
-    private var resendToken: PhoneAuthProvider.ForceResendingToken? = null
-    private var pendingPhoneE164: String = ""
+    private val _usernameAvailability = MutableStateFlow<UsernameAvailability>(UsernameAvailability.Idle)
+    val usernameAvailability: StateFlow<UsernameAvailability> = _usernameAvailability.asStateFlow()
+
+    private var usernameCheckJob: Job? = null
 
     init {
         refreshLocalBackups()
@@ -76,16 +82,59 @@ class BackupViewModel(
         _localBackups.value = backupRepository.listLocalBackups()
     }
 
-    fun updateProfile(displayName: String, about: String, phoneNumber: String?) {
+    fun checkUsername(rawInput: String) {
+        usernameCheckJob?.cancel()
+        val normalized = UserAndContactsRepository.normalizeUsername(rawInput)
+        val currentSaved = myProfile.value?.username?.let(UserAndContactsRepository::normalizeUsername)
+        if (normalized.isEmpty()) {
+            _usernameAvailability.value = UsernameAvailability.Invalid("Digite um @username (mín. 3 caracteres).")
+            return
+        }
+        if (!UserAndContactsRepository.isValidUsername(normalized)) {
+            _usernameAvailability.value = UsernameAvailability.Invalid(
+                "Use 3 a 24 caracteres: a-z, 0-9, ponto (.) ou underline (_)."
+            )
+            return
+        }
+        if (normalized == currentSaved) {
+            _usernameAvailability.value = UsernameAvailability.Idle
+            return
+        }
+        usernameCheckJob = viewModelScope.launch {
+            _usernameAvailability.value = UsernameAvailability.Checking(normalized)
+            delay(350)
+            userRepository.checkUsernameAvailability(normalized)
+                .onSuccess { available ->
+                    _usernameAvailability.value = if (available) {
+                        UsernameAvailability.Available(normalized)
+                    } else {
+                        UsernameAvailability.Taken(normalized)
+                    }
+                }
+                .onFailure { err ->
+                    _usernameAvailability.value = UsernameAvailability.Invalid(
+                        err.localizedMessage ?: "Não foi possível verificar disponibilidade."
+                    )
+                }
+        }
+    }
+
+    fun updateProfile(
+        displayName: String,
+        username: String,
+        about: String,
+        phoneNumber: String?
+    ) {
         viewModelScope.launch {
             _isBusy.value = true
             userRepository.updateProfile(
                 displayName = displayName,
+                username = username,
                 about = about,
-                phoneNumber = phoneNumber,
-                phoneVerified = myProfile.value?.phoneVerified == true
-            ).onSuccess {
-                _statusMessage.value = "Perfil atualizado no Cloud Firestore."
+                phoneNumber = phoneNumber
+            ).onSuccess { savedHandle ->
+                _usernameAvailability.value = UsernameAvailability.Idle
+                _statusMessage.value = "Perfil e @$savedHandle atualizados no Cloud Firestore."
             }.onFailure { err ->
                 _statusMessage.value = err.localizedMessage ?: "Falha ao atualizar perfil."
             }
@@ -199,70 +248,6 @@ class BackupViewModel(
                 }
             _isBusy.value = false
         }
-    }
-
-    fun startPhoneSmsVerification(activity: Activity, rawPhone: String) {
-        val cleaned = rawPhone.trim()
-        val digitsOnly = cleaned.filter(Char::isDigit)
-        val e164 = if (cleaned.startsWith("+")) "+$digitsOnly" else "+55$digitsOnly"
-        if (digitsOnly.length < 10) {
-            _statusMessage.value = "Informe o telefone completo com DDD e código do país (ex: +5511999998888)."
-            return
-        }
-        pendingPhoneE164 = e164
-        _isBusy.value = true
-        authRepository.startPhoneNumberVerification(activity, e164, resendToken) { event ->
-            when (event) {
-                is PhoneVerificationEvent.CodeSent -> {
-                    _verificationId.value = event.verificationId
-                    resendToken = event.resendToken
-                    _isBusy.value = false
-                    _statusMessage.value = "Código SMS enviado para $e164."
-                }
-                is PhoneVerificationEvent.AutoVerified -> {
-                    viewModelScope.launch {
-                        authRepository.linkOrUpdatePhoneCredential(event.credential)
-                            .onSuccess { linked ->
-                                val name = myProfile.value?.displayName ?: "Usuário Zap2"
-                                val about = myProfile.value?.about ?: "Disponível no Zap2"
-                                userRepository.updateProfile(name, about, linked.ifBlank { e164 }, true)
-                                _statusMessage.value = "Telefone verificado e vinculado via SMS!"
-                            }
-                            .onFailure { err ->
-                                _statusMessage.value = err.localizedMessage ?: "Falha ao vincular telefone."
-                            }
-                        _isBusy.value = false
-                    }
-                }
-                is PhoneVerificationEvent.Failed -> {
-                    _isBusy.value = false
-                    _statusMessage.value = event.message
-                }
-            }
-        }
-    }
-
-    fun submitSmsCode(code: String) {
-        val verId = _verificationId.value ?: return
-        viewModelScope.launch {
-            _isBusy.value = true
-            authRepository.verifySmsCodeAndLink(verId, code)
-                .onSuccess { linked ->
-                    val name = myProfile.value?.displayName ?: "Usuário Zap2"
-                    val about = myProfile.value?.about ?: "Disponível no Zap2"
-                    userRepository.updateProfile(name, about, linked.ifBlank { pendingPhoneE164 }, true)
-                    _verificationId.value = null
-                    _statusMessage.value = "Número verificado via SMS com sucesso!"
-                }
-                .onFailure { err ->
-                    _statusMessage.value = err.localizedMessage ?: "Código SMS inválido."
-                }
-            _isBusy.value = false
-        }
-    }
-
-    fun cancelSmsVerification() {
-        _verificationId.value = null
     }
 
     fun createLocalEncryptedBackup(password: String, exportAfterCreate: Boolean = false) {
@@ -409,7 +394,7 @@ class BackupViewModel(
         viewModelScope.launch {
             settingsStore.setDefaultZipExtractUri(uriString)
             _statusMessage.value = if (uriString.isBlank()) {
-                "Caminho padrão de extração ZIP restaurado para a pasta do Zap2."
+                "Caminho padrão de extração ZIP restaurado para a pasta do WhatwillIdo."
             } else {
                 "Pasta padrão de extração ZIP atualizada!"
             }

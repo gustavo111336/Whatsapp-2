@@ -1136,7 +1136,7 @@ private fun MessageBubbleRow(
         if (!isMine) {
             if (isFirstInGroup) {
                 Zap2Avatar(
-                    name = message.senderName.ifBlank { "Zap2" },
+                    name = message.senderName.ifBlank { "WhatwillIdo" },
                     photoUrl = senderPhotoUrl,
                     size = 30.dp,
                     modifier = Modifier.padding(end = 6.dp)

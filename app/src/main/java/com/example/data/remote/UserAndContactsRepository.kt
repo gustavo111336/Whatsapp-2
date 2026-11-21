@@ -4,16 +4,15 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.provider.ContactsContract
 import com.example.R
 import com.example.data.local.LocalContactEntity
 import com.example.data.local.SettingsDataStore
 import com.example.data.local.Zap2Dao
 import com.example.data.model.ContactEntry
-import com.example.data.model.DeviceContact
-import com.example.data.model.PhoneLookup
+import com.example.data.model.EmailLookup
 import com.example.data.model.PublicProfile
 import com.example.data.model.UserProfile
+import com.example.data.model.UsernameLookup
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
@@ -35,6 +34,7 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.Locale
 import java.util.UUID
 
 class UserAndContactsRepository(
@@ -72,18 +72,37 @@ class UserAndContactsRepository(
         return try {
             val privateRef = db.collection("users").document(uid)
             val existing = privateRef.get().await()
-            val displayName = user.displayName?.takeIf { it.isNotBlank() } ?: "Usuário Zap2"
+            val displayName = user.displayName?.takeIf { it.isNotBlank() } ?: "Usuário WhatwillIdo"
             val photoUrl = user.photoUrl?.toString()?.take(1000)
+            val resolvedEmail = user.email?.trim()?.lowercase(Locale.ROOT)?.take(160)
+                ?: existing.getString("email")?.trim()?.lowercase(Locale.ROOT)?.take(160)
+
+            val resolvedName = existing.getString("displayName")?.takeIf { it.isNotBlank() } ?: displayName
+            val resolvedAbout = existing.getString("about")?.takeIf { it.isNotBlank() } ?: "Disponível no WhatwillIdo"
+            val resolvedPhoto = existing.getString("photoUrl")?.takeIf { it.isNotBlank() } ?: photoUrl
+            val resolvedBanner = existing.getString("bannerUrl")?.takeIf { it.isNotBlank() }
+
+            // Ensure unique @username is created/claimed atomically
+            val existingUsername = existing.getString("username")
+                ?.let(::normalizeUsername)
+                ?.takeIf(::isValidUsername)
+            val resolvedUsername = ensureInitialUsernameClaimed(
+                uid = uid,
+                preferredUsername = existingUsername,
+                displayName = resolvedName,
+                email = resolvedEmail,
+                photoUrl = resolvedPhoto
+            )
 
             if (!existing.exists()) {
                 val createMap = mutableMapOf<String, Any?>(
                     "uid" to uid,
-                    "displayName" to displayName.take(80),
-                    "about" to "Disponível no Zap2",
-                    "phoneNumber" to user.phoneNumber?.take(32),
-                    "phoneVerified" to !user.phoneNumber.isNullOrBlank(),
-                    "email" to user.email?.take(160),
-                    "photoUrl" to photoUrl,
+                    "username" to resolvedUsername,
+                    "displayName" to resolvedName.take(80),
+                    "about" to resolvedAbout.take(160),
+                    "phoneVerified" to false,
+                    "email" to resolvedEmail,
+                    "photoUrl" to resolvedPhoto,
                     "online" to true,
                     "lastSeen" to FieldValue.serverTimestamp(),
                     "createdAt" to FieldValue.serverTimestamp(),
@@ -92,58 +111,56 @@ class UserAndContactsRepository(
                 privateRef.set(createMap).await()
             } else {
                 val updateMap = mutableMapOf<String, Any?>(
+                    "username" to resolvedUsername,
+                    "phoneVerified" to false,
                     "online" to true,
                     "lastSeen" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
                 if (existing.getString("displayName").isNullOrBlank()) {
-                    updateMap["displayName"] = displayName.take(80)
+                    updateMap["displayName"] = resolvedName.take(80)
                 }
-                if (existing.getString("photoUrl").isNullOrBlank() && photoUrl != null) {
-                    updateMap["photoUrl"] = photoUrl
+                if (existing.getString("photoUrl").isNullOrBlank() && resolvedPhoto != null) {
+                    updateMap["photoUrl"] = resolvedPhoto
+                }
+                if (existing.getString("email").isNullOrBlank() && resolvedEmail != null) {
+                    updateMap["email"] = resolvedEmail
                 }
                 privateRef.update(updateMap.filterValues { it != null } as Map<String, Any>).await()
             }
 
             val publicRef = db.collection("public_profiles").document(uid)
-            val existingPub = publicRef.get().await()
-            val resolvedName = existing.getString("displayName")?.takeIf { it.isNotBlank() } ?: displayName
-            val resolvedAbout = existing.getString("about") ?: "Disponível no Zap2"
-            val resolvedPhoto = existing.getString("photoUrl") ?: photoUrl
+            val pubPayload = mutableMapOf<String, Any?>(
+                "uid" to uid,
+                "username" to resolvedUsername,
+                "displayName" to resolvedName.take(80),
+                "displayNameLower" to resolvedName.trim().lowercase(Locale.ROOT).take(80),
+                "about" to resolvedAbout.take(160),
+                "photoUrl" to resolvedPhoto,
+                "bannerUrl" to resolvedBanner,
+                "online" to true,
+                "lastSeen" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp()
+            ).filterValues { it != null } as Map<String, Any>
+            publicRef.set(pubPayload, SetOptions.merge()).await()
 
-            if (!existingPub.exists()) {
-                val pubCreate = mutableMapOf<String, Any?>(
-                    "uid" to uid,
-                    "displayName" to resolvedName.take(80),
-                    "about" to resolvedAbout.take(160),
-                    "photoUrl" to resolvedPhoto,
-                    "online" to true,
-                    "lastSeen" to FieldValue.serverTimestamp(),
-                    "updatedAt" to FieldValue.serverTimestamp()
-                ).filterValues { it != null } as Map<String, Any>
-                publicRef.set(pubCreate).await()
-            } else {
-                publicRef.update(
-                    mapOf(
-                        "online" to true,
-                        "lastSeen" to FieldValue.serverTimestamp(),
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    )
-                ).await()
+            if (!resolvedEmail.isNullOrBlank()) {
+                upsertEmailLookup(
+                    uid = uid,
+                    emailLower = resolvedEmail,
+                    displayName = resolvedName,
+                    username = resolvedUsername,
+                    photoUrl = resolvedPhoto
+                )
             }
 
-            val phoneDigits = normalizePhoneDigits(
-                existing.getString("phoneNumber") ?: user.phoneNumber.orEmpty()
+            settingsStore?.saveLocalProfileCache(
+                displayName = resolvedName,
+                username = resolvedUsername,
+                about = resolvedAbout,
+                photoUrl = resolvedPhoto.orEmpty(),
+                bannerUrl = resolvedBanner.orEmpty()
             )
-            if (phoneDigits.length in 6..20) {
-                try {
-                    upsertPhoneLookup(uid, resolvedName, resolvedPhoto, phoneDigits)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    handleFirestoreError(e, OperationType.WRITE, "phone_lookup/$phoneDigits")
-                }
-            }
 
             Result.success(Unit)
         } catch (e: CancellationException) {
@@ -151,6 +168,85 @@ class UserAndContactsRepository(
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.WRITE, "$privatePath / $publicPath")
             Result.failure(e)
+        }
+    }
+
+    private suspend fun ensureInitialUsernameClaimed(
+        uid: String,
+        preferredUsername: String?,
+        displayName: String,
+        email: String?,
+        photoUrl: String?
+    ): String {
+        val candidates = linkedSetOf<String>()
+        if (preferredUsername != null && isValidUsername(preferredUsername)) {
+            candidates += preferredUsername
+        }
+        val base = deriveUsernameBase(email = email, displayName = displayName, uid = uid)
+        candidates += base
+        val uidSuffix = uid.filter { it.isLetterOrDigit() }.takeLast(4).lowercase(Locale.ROOT).ifBlank { "1" }
+        candidates += "${base.take(19)}_$uidSuffix"
+        repeat(6) { idx ->
+            val rnd = (1000..9999).random()
+            candidates += "${base.take(18)}_${rnd + idx}"
+        }
+
+        for (candidate in candidates) {
+            if (!isValidUsername(candidate)) continue
+            val lookupRef = db.collection("username_lookup").document(candidate)
+            val snap = lookupRef.get().await()
+            if (!snap.exists()) {
+                val payload = mutableMapOf<String, Any?>(
+                    "uid" to uid,
+                    "username" to candidate,
+                    "displayName" to displayName.take(80),
+                    "photoUrl" to photoUrl?.take(2048),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                ).filterValues { it != null } as Map<String, Any>
+                val claimed = try {
+                    db.runTransaction { tx ->
+                        val check = tx.get(lookupRef)
+                        if (!check.exists() || check.getString("uid") == uid) {
+                            tx.set(lookupRef, payload)
+                            true
+                        } else {
+                            false
+                        }
+                    }.await()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    false
+                }
+                if (claimed) return candidate
+            } else if (snap.getString("uid") == uid) {
+                return candidate
+            }
+        }
+        throw IllegalStateException("Não foi possível reservar um @username único. Tente novamente.")
+    }
+
+    private suspend fun upsertEmailLookup(
+        uid: String,
+        emailLower: String,
+        displayName: String,
+        username: String?,
+        photoUrl: String?
+    ) {
+        if (!EMAIL_REGEX.matches(emailLower) || emailLower.contains('/')) return
+        try {
+            val payload = mutableMapOf<String, Any?>(
+                "uid" to uid,
+                "displayName" to displayName.take(80),
+                "username" to username?.takeIf(::isValidUsername),
+                "photoUrl" to photoUrl?.take(2048),
+                "updatedAt" to FieldValue.serverTimestamp()
+            ).filterValues { it != null } as Map<String, Any>
+            db.collection("email_lookup").document(emailLower).set(payload).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, "email_lookup/$emailLower")
         }
     }
 
@@ -164,6 +260,7 @@ class UserAndContactsRepository(
                     if (profile != null) {
                         settingsStore?.saveLocalProfileCache(
                             displayName = profile.displayName,
+                            username = profile.username,
                             about = profile.about,
                             photoUrl = profile.photoUrl.orEmpty(),
                             bannerUrl = profile.bannerUrl.orEmpty()
@@ -205,57 +302,152 @@ class UserAndContactsRepository(
         )
     }
 
+    suspend fun checkUsernameAvailability(rawUsername: String): Result<Boolean> {
+        val uid = auth.currentUser?.uid ?: return Result.failure(IllegalStateException("Não autenticado"))
+        val clean = normalizeUsername(rawUsername)
+        if (!isValidUsername(clean)) {
+            return Result.failure(
+                IllegalArgumentException("Use 3 a 24 caracteres: letras minúsculas, números, ponto (.) ou underline (_).")
+            )
+        }
+        return try {
+            val snap = db.collection("username_lookup").document(clean).get().await()
+            Result.success(!snap.exists() || snap.getString("uid") == uid)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun updateProfile(
         displayName: String,
+        username: String,
         about: String,
-        phoneNumber: String?,
-        phoneVerified: Boolean
-    ): Result<Unit> {
-        val uid = auth.currentUser?.uid ?: return Result.failure(IllegalStateException("Não autenticado"))
+        phoneNumber: String?
+    ): Result<String> {
+        val user = auth.currentUser ?: return Result.failure(IllegalStateException("Não autenticado"))
+        val uid = user.uid
         val cleanName = displayName.trim().take(80)
-        require(cleanName.isNotEmpty()) { "Nome não pode ser vazio." }
+        if (cleanName.isEmpty()) {
+            return Result.failure(IllegalArgumentException("Nome de exibição não pode ser vazio."))
+        }
+        val cleanUsername = normalizeUsername(username)
+        if (!isValidUsername(cleanUsername)) {
+            return Result.failure(
+                IllegalArgumentException(
+                    "Nome de usuário inválido. Use 3 a 24 caracteres (a-z, 0-9, '.' ou '_')."
+                )
+            )
+        }
         val cleanAbout = about.trim().take(160)
         val cleanPhone = phoneNumber?.trim()?.take(32)?.takeIf { it.isNotEmpty() }
 
         return try {
-            val updates = mutableMapOf<String, Any?>(
-                "displayName" to cleanName,
-                "about" to cleanAbout,
-                "phoneVerified" to phoneVerified,
-                "updatedAt" to FieldValue.serverTimestamp()
-            )
-            if (cleanPhone != null) {
-                updates["phoneNumber"] = cleanPhone
-            }
-            db.collection("users").document(uid)
-                .update(updates.filterValues { it != null } as Map<String, Any>)
-                .await()
+            val userRef = db.collection("users").document(uid)
+            val publicRef = db.collection("public_profiles").document(uid)
+            val newLookupRef = db.collection("username_lookup").document(cleanUsername)
 
-            db.collection("public_profiles").document(uid)
-                .set(
-                    mapOf(
+            db.runTransaction { tx ->
+                val existingUser = tx.get(userRef)
+                val existingPublic = tx.get(publicRef)
+                val newLookupSnap = tx.get(newLookupRef)
+
+                if (newLookupSnap.exists() && newLookupSnap.getString("uid") != uid) {
+                    throw IllegalStateException("O @$cleanUsername já está em uso por outro usuário.")
+                }
+
+                val oldUsername = existingUser.getString("username")
+                    ?.let(::normalizeUsername)
+                    ?.takeIf(::isValidUsername)
+                val oldLookupSnap = if (oldUsername != null && oldUsername != cleanUsername) {
+                    tx.get(db.collection("username_lookup").document(oldUsername))
+                } else {
+                    null
+                }
+
+                val existingPhoto = existingUser.getString("photoUrl")?.takeIf { it.isNotBlank() }
+                    ?: user.photoUrl?.toString()?.take(1000)
+
+                val lookupPayload = mutableMapOf<String, Any?>(
+                    "uid" to uid,
+                    "username" to cleanUsername,
+                    "displayName" to cleanName,
+                    "photoUrl" to existingPhoto,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                ).filterValues { it != null } as Map<String, Any>
+                tx.set(newLookupRef, lookupPayload)
+
+                if (oldUsername != null &&
+                    oldUsername != cleanUsername &&
+                    oldLookupSnap != null &&
+                    oldLookupSnap.exists() &&
+                    oldLookupSnap.getString("uid") == uid
+                ) {
+                    tx.delete(db.collection("username_lookup").document(oldUsername))
+                }
+
+                val userUpdates = mutableMapOf<String, Any>(
+                    "username" to cleanUsername,
+                    "displayName" to cleanName,
+                    "about" to cleanAbout,
+                    "phoneVerified" to false,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                if (cleanPhone != null) {
+                    userUpdates["phoneNumber"] = cleanPhone
+                } else if (existingUser.contains("phoneNumber")) {
+                    userUpdates["phoneNumber"] = FieldValue.delete()
+                }
+                tx.update(userRef, userUpdates)
+
+                if (existingPublic.exists()) {
+                    tx.update(
+                        publicRef,
+                        mapOf(
+                            "username" to cleanUsername,
+                            "displayName" to cleanName,
+                            "displayNameLower" to cleanName.lowercase(Locale.ROOT),
+                            "about" to cleanAbout,
+                            "online" to true,
+                            "lastSeen" to FieldValue.serverTimestamp(),
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    )
+                } else {
+                    val createPub = mutableMapOf<String, Any?>(
                         "uid" to uid,
+                        "username" to cleanUsername,
                         "displayName" to cleanName,
+                        "displayNameLower" to cleanName.lowercase(Locale.ROOT),
                         "about" to cleanAbout,
+                        "photoUrl" to existingPhoto,
                         "online" to true,
                         "lastSeen" to FieldValue.serverTimestamp(),
                         "updatedAt" to FieldValue.serverTimestamp()
-                    ),
-                    SetOptions.merge()
-                )
-                .await()
-
-            settingsStore?.saveLocalProfileCache(displayName = cleanName, about = cleanAbout)
-
-            if (cleanPhone != null) {
-                val digits = normalizePhoneDigits(cleanPhone)
-                if (digits.length in 6..20) {
-                    val userSnap = db.collection("users").document(uid).get().await()
-                    val currentPhoto = userSnap.getString("photoUrl") ?: auth.currentUser?.photoUrl?.toString()
-                    upsertPhoneLookup(uid, cleanName, currentPhoto, digits)
+                    ).filterValues { it != null } as Map<String, Any>
+                    tx.set(publicRef, createPub)
                 }
+            }.await()
+
+            val emailLower = user.email?.trim()?.lowercase(Locale.ROOT)
+            if (!emailLower.isNullOrBlank()) {
+                val userSnap = userRef.get().await()
+                upsertEmailLookup(
+                    uid = uid,
+                    emailLower = emailLower,
+                    displayName = cleanName,
+                    username = cleanUsername,
+                    photoUrl = userSnap.getString("photoUrl")
+                )
             }
-            Result.success(Unit)
+
+            settingsStore?.saveLocalProfileCache(
+                displayName = cleanName,
+                username = cleanUsername,
+                about = cleanAbout
+            )
+            Result.success(cleanUsername)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -351,11 +543,27 @@ class UserAndContactsRepository(
             ).await()
 
             val userSnap = db.collection("users").document(uid).get().await()
-            val name = userSnap.getString("displayName") ?: "Usuário Zap2"
-            val phone = userSnap.getString("phoneNumber").orEmpty()
-            val digits = normalizePhoneDigits(phone)
-            if (digits.length in 6..20) {
-                upsertPhoneLookup(uid, name, finalUrl.takeIf { it.isNotBlank() }, digits)
+            val name = userSnap.getString("displayName") ?: "Usuário WhatwillIdo"
+            val username = userSnap.getString("username")?.let(::normalizeUsername)?.takeIf(::isValidUsername)
+            if (username != null) {
+                runCatching {
+                    db.collection("username_lookup").document(username).update(
+                        mapOf(
+                            "photoUrl" to finalUrl,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                }
+            }
+            val emailLower = auth.currentUser?.email?.trim()?.lowercase(Locale.ROOT)
+            if (!emailLower.isNullOrBlank()) {
+                upsertEmailLookup(
+                    uid = uid,
+                    emailLower = emailLower,
+                    displayName = name,
+                    username = username,
+                    photoUrl = finalUrl.takeIf { it.isNotBlank() }
+                )
             }
 
             settingsStore?.saveLocalProfileCache(photoUrl = finalUrl)
@@ -409,7 +617,6 @@ class UserAndContactsRepository(
             return@withContext dest to mime
         }
 
-        // Static image: scale down nicely and preserve high quality
         val rawTemp = File(ctx.cacheDir, "tmp_profile_${UUID.randomUUID()}.bin")
         try {
             ctx.contentResolver.openInputStream(uri)?.use { input ->
@@ -471,23 +678,6 @@ class UserAndContactsRepository(
         )
     }
 
-    private suspend fun upsertPhoneLookup(
-        uid: String,
-        displayName: String,
-        photoUrl: String?,
-        digits: String
-    ) {
-        if (digits.length !in 6..20) return
-        val docRef = db.collection("phone_lookup").document(digits)
-        val payload = mutableMapOf<String, Any?>(
-            "uid" to uid,
-            "displayName" to displayName.take(80),
-            "photoUrl" to photoUrl?.take(1000),
-            "updatedAt" to FieldValue.serverTimestamp()
-        ).filterValues { it != null } as Map<String, Any>
-        docRef.set(payload).await()
-    }
-
     suspend fun setOnlineStatus(online: Boolean) {
         val uid = auth.currentUser?.uid ?: return
         try {
@@ -538,6 +728,7 @@ class UserAndContactsRepository(
                                 contactId = c.id.ifBlank { c.peerUid },
                                 ownerId = c.ownerId,
                                 peerUid = c.peerUid,
+                                username = c.username,
                                 displayName = c.displayName,
                                 phoneNumber = c.phoneNumber,
                                 photoUrl = c.photoUrl,
@@ -561,64 +752,174 @@ class UserAndContactsRepository(
         )
     }
 
-    suspend fun findUserByPhoneOrId(query: String): Result<PublicProfile> {
-        val trimmed = query.trim()
+    /**
+     * Searches Zap2 users securely by:
+     * 1. Exact Google email (`email_lookup/{emailLower}`, no collection listing allowed)
+     * 2. `@username` exact match (`username_lookup/{handle}`) + prefix query on `public_profiles.username`
+     * 3. Display name prefix query on `public_profiles.displayNameLower` (and fallback `displayName`)
+     * 4. Direct Firebase UID match on `public_profiles/{uid}`
+     */
+    suspend fun searchUsers(rawQuery: String): Result<List<PublicProfile>> {
+        val trimmed = rawQuery.trim()
         if (trimmed.isBlank()) {
-            return Result.failure(IllegalArgumentException("Digite um número de telefone ou ID do Zap2."))
+            return Result.success(emptyList())
         }
-        val digits = normalizePhoneDigits(trimmed)
+        val lower = trimmed.lowercase(Locale.ROOT)
+        val cleanHandle = normalizeUsername(trimmed)
+        val results = linkedMapOf<String, PublicProfile>()
+
         return try {
-            // 1. Try phone_lookup if query contains at least 6 digits
-            if (digits.length in 6..20) {
-                val candidates = buildPhoneDigitCandidates(digits)
-                for (candidate in candidates) {
-                    val lookupSnap = db.collection("phone_lookup").document(candidate).get().await()
-                    if (lookupSnap.exists()) {
-                        val lookup = lookupSnap.toObject(PhoneLookup::class.java)
-                        if (lookup != null && lookup.uid.isNotBlank()) {
-                            val profileSnap = db.collection("public_profiles").document(lookup.uid).get().await()
-                            val profile = profileSnap.toObject(
-                                PublicProfile::class.java,
-                                DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
-                            ) ?: PublicProfile(
-                                id = lookup.uid,
-                                uid = lookup.uid,
-                                displayName = lookup.displayName,
-                                photoUrl = lookup.photoUrl
-                            )
-                            return Result.success(profile)
+            // 1. Exact email lookup
+            if (EMAIL_REGEX.matches(lower) && !lower.contains('/')) {
+                val emailSnap = runCatching {
+                    db.collection("email_lookup").document(lower).get().await()
+                }.getOrNull()
+                if (emailSnap != null && emailSnap.exists()) {
+                    val lookup = emailSnap.toObject(EmailLookup::class.java)
+                    if (lookup != null && lookup.uid.isNotBlank()) {
+                        val profile = fetchPublicProfileOrFallback(
+                            uid = lookup.uid,
+                            fallbackName = lookup.displayName,
+                            fallbackUsername = lookup.username,
+                            fallbackPhoto = lookup.photoUrl
+                        )
+                        results[profile.uid] = profile
+                    }
+                }
+            }
+
+            // 2. Exact @username lookup
+            if (isValidUsername(cleanHandle)) {
+                val usernameSnap = runCatching {
+                    db.collection("username_lookup").document(cleanHandle).get().await()
+                }.getOrNull()
+                if (usernameSnap != null && usernameSnap.exists()) {
+                    val lookup = usernameSnap.toObject(UsernameLookup::class.java)
+                    if (lookup != null && lookup.uid.isNotBlank() && !results.containsKey(lookup.uid)) {
+                        val profile = fetchPublicProfileOrFallback(
+                            uid = lookup.uid,
+                            fallbackName = lookup.displayName,
+                            fallbackUsername = lookup.username,
+                            fallbackPhoto = lookup.photoUrl
+                        )
+                        results[profile.uid] = profile
+                    }
+                }
+            }
+
+            // 3. @username prefix search on public_profiles
+            val handlePrefix = trimmed.trimStart('@').lowercase(Locale.ROOT)
+                .filter { it in 'a'..'z' || it in '0'..'9' || it == '.' || it == '_' }
+            if (handlePrefix.isNotBlank()) {
+                val usernameQuerySnap = runCatching {
+                    db.collection("public_profiles")
+                        .whereGreaterThanOrEqualTo("username", handlePrefix)
+                        .whereLessThanOrEqualTo("username", "$handlePrefix\uf8ff")
+                        .limit(15)
+                        .get()
+                        .await()
+                }.getOrNull()
+                usernameQuerySnap?.documents?.forEach { doc ->
+                    val p = doc.toObject(
+                        PublicProfile::class.java,
+                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                    )
+                    if (p != null && p.uid.isNotBlank() && !results.containsKey(p.uid)) {
+                        results[p.uid] = p
+                    }
+                }
+            }
+
+            // 4. Display name search (lowercase prefix + case-preserved fallback for legacy profiles)
+            if (!trimmed.startsWith("@")) {
+                val nameQueryLowerSnap = runCatching {
+                    db.collection("public_profiles")
+                        .whereGreaterThanOrEqualTo("displayNameLower", lower)
+                        .whereLessThanOrEqualTo("displayNameLower", "$lower\uf8ff")
+                        .limit(15)
+                        .get()
+                        .await()
+                }.getOrNull()
+                nameQueryLowerSnap?.documents?.forEach { doc ->
+                    val p = doc.toObject(
+                        PublicProfile::class.java,
+                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                    )
+                    if (p != null && p.uid.isNotBlank() && !results.containsKey(p.uid)) {
+                        results[p.uid] = p
+                    }
+                }
+
+                val nameQueryExactCaseSnap = runCatching {
+                    db.collection("public_profiles")
+                        .whereGreaterThanOrEqualTo("displayName", trimmed)
+                        .whereLessThanOrEqualTo("displayName", "$trimmed\uf8ff")
+                        .limit(10)
+                        .get()
+                        .await()
+                }.getOrNull()
+                nameQueryExactCaseSnap?.documents?.forEach { doc ->
+                    val p = doc.toObject(
+                        PublicProfile::class.java,
+                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                    )
+                    if (p != null && p.uid.isNotBlank() && !results.containsKey(p.uid)) {
+                        results[p.uid] = p
+                    }
+                }
+
+                // 5. Direct UID fallback
+                if (trimmed.length >= 6 && UID_REGEX.matches(trimmed) && !results.containsKey(trimmed)) {
+                    val directSnap = runCatching {
+                        db.collection("public_profiles").document(trimmed).get().await()
+                    }.getOrNull()
+                    if (directSnap != null && directSnap.exists()) {
+                        val p = directSnap.toObject(
+                            PublicProfile::class.java,
+                            DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                        )
+                        if (p != null && p.uid.isNotBlank()) {
+                            results[p.uid] = p
                         }
                     }
                 }
             }
 
-            // 2. Try direct UID lookup in public_profiles
-            val cleanId = trimmed.replace(Regex("[^a-zA-Z0-9_\\-]"), "")
-            if (cleanId.isNotBlank()) {
-                val profileSnap = db.collection("public_profiles").document(cleanId).get().await()
-                if (profileSnap.exists()) {
-                    val profile = profileSnap.toObject(
-                        PublicProfile::class.java,
-                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
-                    )
-                    if (profile != null) {
-                        return Result.success(profile)
-                    }
-                }
-            }
-
-            Result.failure(NoSuchElementException("Nenhum usuário Zap2 encontrado para \"$trimmed\"."))
+            Result.success(results.values.toList())
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.GET, "phone_lookup / public_profiles")
+            handleFirestoreError(e, OperationType.GET, "public_profiles / username_lookup / email_lookup")
             Result.failure(e)
         }
+    }
+
+    private suspend fun fetchPublicProfileOrFallback(
+        uid: String,
+        fallbackName: String,
+        fallbackUsername: String,
+        fallbackPhoto: String?
+    ): PublicProfile {
+        val snap = runCatching {
+            db.collection("public_profiles").document(uid).get().await()
+        }.getOrNull()
+        return snap?.toObject(
+            PublicProfile::class.java,
+            DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+        ) ?: PublicProfile(
+            id = uid,
+            uid = uid,
+            username = fallbackUsername,
+            displayName = fallbackName,
+            displayNameLower = fallbackName.lowercase(Locale.ROOT),
+            photoUrl = fallbackPhoto
+        )
     }
 
     suspend fun addContact(
         peerUid: String,
         displayName: String,
+        username: String? = null,
         phoneNumber: String? = null,
         photoUrl: String? = null
     ): Result<Unit> {
@@ -628,7 +929,10 @@ class UserAndContactsRepository(
             return Result.failure(e)
         }
         val cleanPeerUid = peerUid.trim().take(128)
-        val cleanName = displayName.trim().take(80).ifBlank { "Contato Zap2" }
+        val cleanName = displayName.trim().take(80).ifBlank { "Contato WhatwillIdo" }
+        val cleanUsername = username?.let(::normalizeUsername)?.takeIf { it.isNotBlank() }?.take(30)
+        val cleanPhone = phoneNumber?.trim()?.take(32)?.takeIf { it.isNotEmpty() }
+        val cleanPhoto = photoUrl?.take(1000)?.takeIf { it.isNotEmpty() }
         val docPath = "users/$uid/contacts/$cleanPeerUid"
 
         return try {
@@ -640,9 +944,10 @@ class UserAndContactsRepository(
                 val createPayload = mutableMapOf<String, Any?>(
                     "ownerId" to uid,
                     "peerUid" to cleanPeerUid,
+                    "username" to cleanUsername,
                     "displayName" to cleanName,
-                    "phoneNumber" to phoneNumber?.trim()?.take(32)?.takeIf { it.isNotEmpty() },
-                    "photoUrl" to photoUrl?.take(1000)?.takeIf { it.isNotEmpty() },
+                    "phoneNumber" to cleanPhone,
+                    "photoUrl" to cleanPhoto,
                     "createdAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp()
                 ).filterValues { it != null } as Map<String, Any>
@@ -650,9 +955,10 @@ class UserAndContactsRepository(
             } else {
                 val updatePayload = mutableMapOf<String, Any?>(
                     "peerUid" to cleanPeerUid,
+                    "username" to cleanUsername,
                     "displayName" to cleanName,
-                    "phoneNumber" to phoneNumber?.trim()?.take(32)?.takeIf { it.isNotEmpty() },
-                    "photoUrl" to photoUrl?.take(1000)?.takeIf { it.isNotEmpty() },
+                    "phoneNumber" to cleanPhone,
+                    "photoUrl" to cleanPhoto,
                     "updatedAt" to FieldValue.serverTimestamp()
                 ).filterValues { it != null } as Map<String, Any>
                 docRef.update(updatePayload).await()
@@ -664,9 +970,10 @@ class UserAndContactsRepository(
                         contactId = cleanPeerUid,
                         ownerId = uid,
                         peerUid = cleanPeerUid,
+                        username = cleanUsername,
                         displayName = cleanName,
-                        phoneNumber = phoneNumber,
-                        photoUrl = photoUrl,
+                        phoneNumber = cleanPhone,
+                        photoUrl = cleanPhoto,
                         updatedAtMs = System.currentTimeMillis()
                     )
                 )
@@ -694,88 +1001,37 @@ class UserAndContactsRepository(
         }
     }
 
-    suspend fun readAndMatchDeviceContacts(context: Context): Result<List<DeviceContact>> =
-        withContext(Dispatchers.IO) {
-            try {
-                val results = mutableListOf<DeviceContact>()
-                val seenPhones = HashSet<String>()
-
-                val projection = arrayOf(
-                    ContactsContract.CommonDataKinds.Phone.CONTACT_ID,
-                    ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
-                    ContactsContract.CommonDataKinds.Phone.NUMBER
-                )
-                context.contentResolver.query(
-                    ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-                    projection,
-                    null,
-                    null,
-                    "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} ASC"
-                )?.use { cursor ->
-                    val idIdx = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.CONTACT_ID)
-                    val nameIdx = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
-                    val numIdx = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER)
-
-                    while (cursor.moveToNext() && results.size < 100) {
-                        val id = cursor.getString(idIdx) ?: continue
-                        val name = cursor.getString(nameIdx)?.trim() ?: continue
-                        val rawNumber = cursor.getString(numIdx)?.trim() ?: continue
-                        val digits = normalizePhoneDigits(rawNumber)
-                        if (digits.length < 6 || !seenPhones.add(digits)) continue
-
-                        var registeredUid: String? = null
-                        var registeredName: String? = null
-                        var registeredPhoto: String? = null
-
-                        for (candidate in buildPhoneDigitCandidates(digits)) {
-                            val snap = try {
-                                db.collection("phone_lookup").document(candidate).get().await()
-                            } catch (_: Exception) {
-                                null
-                            }
-                            if (snap != null && snap.exists()) {
-                                val lookup = snap.toObject(PhoneLookup::class.java)
-                                if (lookup != null && lookup.uid.isNotBlank()) {
-                                    registeredUid = lookup.uid
-                                    registeredName = lookup.displayName
-                                    registeredPhoto = lookup.photoUrl
-                                    break
-                                }
-                            }
-                        }
-
-                        results += DeviceContact(
-                            lookupId = id,
-                            name = name,
-                            rawPhone = rawNumber,
-                            normalizedDigits = digits,
-                            registeredUid = registeredUid,
-                            registeredDisplayName = registeredName,
-                            registeredPhotoUrl = registeredPhoto
-                        )
-                    }
-                }
-                Result.success(results)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Result.failure(e)
-            }
-        }
-
     companion object {
-        fun normalizePhoneDigits(phone: String): String =
-            phone.filter { it.isDigit() }.take(20)
+        private val USERNAME_REGEX = Regex("^[a-z0-9._]{3,24}$")
+        private val EMAIL_REGEX = Regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$")
+        private val UID_REGEX = Regex("^[a-zA-Z0-9_\\-]+$")
 
-        private fun buildPhoneDigitCandidates(digits: String): List<String> {
-            val list = linkedSetOf(digits)
-            if (!digits.startsWith("55") && digits.length in 10..11) {
-                list.add("55$digits")
+        fun normalizeUsername(raw: String): String =
+            raw.trim()
+                .trimStart('@')
+                .lowercase(Locale.ROOT)
+                .replace(' ', '_')
+                .filter { it in 'a'..'z' || it in '0'..'9' || it == '.' || it == '_' }
+                .take(24)
+
+        fun isValidUsername(normalized: String): Boolean = USERNAME_REGEX.matches(normalized)
+
+        private fun deriveUsernameBase(email: String?, displayName: String, uid: String): String {
+            val fromEmail = email?.substringBefore('@')?.let(::normalizeUsername).orEmpty()
+            val fromName = normalizeUsername(displayName)
+            val chosen = when {
+                fromEmail.length >= 3 -> fromEmail
+                fromName.length >= 3 -> fromName
+                else -> "user_${uid.take(6).lowercase(Locale.ROOT).filter { it.isLetterOrDigit() }}"
+            }.trim('.', '_')
+            return if (chosen.length >= 3) {
+                chosen.take(20)
+            } else {
+                ("zap$chosen${uid.take(4).lowercase(Locale.ROOT)}")
+                    .filter { it in 'a'..'z' || it in '0'..'9' || it == '_' }
+                    .take(20)
+                    .padEnd(3, '0')
             }
-            if (digits.startsWith("55") && digits.length > 11) {
-                list.add(digits.removePrefix("55"))
-            }
-            return list.filter { it.length in 6..20 }
         }
     }
 }

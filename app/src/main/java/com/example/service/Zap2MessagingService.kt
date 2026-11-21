@@ -25,7 +25,7 @@ class Zap2MessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {
         super.onMessageReceived(message)
-        val title = message.notification?.title ?: message.data["title"] ?: "Nova mensagem no Zap2"
+        val title = message.notification?.title ?: message.data["title"] ?: "Nova mensagem no WhatwillIdo"
         val body = message.notification?.body ?: message.data["body"] ?: "Você recebeu uma nova mensagem."
         val isCall = message.data["type"] == "call"
         val chatId = message.data["chatId"]

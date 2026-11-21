@@ -12,7 +12,7 @@ import androidx.sqlite.db.SimpleSQLiteQuery
         LocalMessageEntity::class,
         LocalContactEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class Zap2Database : RoomDatabase() {
@@ -34,6 +34,12 @@ abstract class Zap2Database : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE local_contacts ADD COLUMN username TEXT")
+            }
+        }
+
         @Volatile
         private var INSTANCE: Zap2Database? = null
 
@@ -44,7 +50,7 @@ abstract class Zap2Database : RoomDatabase() {
                     Zap2Database::class.java,
                     DB_NAME
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
                     .also { INSTANCE = it }

@@ -27,8 +27,19 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
-    function isValidPhoneKey(phoneKey) {
-      return phoneKey is string && phoneKey.size() >= 6 && phoneKey.size() <= 20 && phoneKey.matches('^[0-9]+$');
+    function isValidUsernameKey(usernameKey) {
+      return usernameKey is string &&
+             usernameKey.size() >= 3 &&
+             usernameKey.size() <= 24 &&
+             usernameKey.matches('^[a-z0-9._]+$');
+    }
+
+    function isValidEmailKey(emailKey) {
+      return emailKey is string &&
+             emailKey.size() >= 5 &&
+             emailKey.size() <= 160 &&
+             !emailKey.matches('.*[/].*') &&
+             emailKey.matches('^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$');
     }
 
     function isValidTimestamp(ts) {
@@ -49,6 +60,7 @@ service cloud.firestore {
              data.online is bool &&
              isValidTimestamp(data.createdAt) &&
              isValidTimestamp(data.updatedAt) &&
+             (!('username' in data) || isValidUsernameKey(data.username)) &&
              (!('about' in data) || (data.about is string && data.about.size() <= 160)) &&
              (!('phoneNumber' in data) || (data.phoneNumber is string && data.phoneNumber.size() <= 32)) &&
              (!('phoneVerified' in data) || data.phoneVerified is bool) &&
@@ -66,16 +78,27 @@ service cloud.firestore {
              data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
              data.online is bool &&
              isValidTimestamp(data.updatedAt) &&
+             (!('username' in data) || isValidUsernameKey(data.username)) &&
+             (!('displayNameLower' in data) || (data.displayNameLower is string && data.displayNameLower.size() >= 1 && data.displayNameLower.size() <= 80)) &&
              (!('about' in data) || (data.about is string && data.about.size() <= 160)) &&
              (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 2048)) &&
              (!('bannerUrl' in data) || (data.bannerUrl is string && data.bannerUrl.size() <= 2048)) &&
              (!('lastSeen' in data) || isValidTimestamp(data.lastSeen));
     }
 
-    function isValidPhoneLookup(data) {
+    function isValidUsernameLookup(data) {
+      return data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
+             isValidUsernameKey(data.username) &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+             isValidTimestamp(data.updatedAt) &&
+             (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 2048));
+    }
+
+    function isValidEmailLookup(data) {
       return data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
              data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
              isValidTimestamp(data.updatedAt) &&
+             (!('username' in data) || isValidUsernameKey(data.username)) &&
              (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 2048));
     }
 
@@ -85,6 +108,7 @@ service cloud.firestore {
              data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
              isValidTimestamp(data.createdAt) &&
              isValidTimestamp(data.updatedAt) &&
+             (!('username' in data) || (data.username is string && data.username.size() <= 30)) &&
              (!('phoneNumber' in data) || (data.phoneNumber is string && data.phoneNumber.size() <= 32)) &&
              (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 2048));
     }
@@ -198,9 +222,10 @@ service cloud.firestore {
       allow create: if isOwner(userId) &&
                        isValidId(userId) &&
                        incoming().uid == request.auth.uid &&
+                       (!('phoneVerified' in incoming()) || incoming().phoneVerified == false) &&
                        incoming().keys().hasAll(['uid', 'displayName', 'online', 'createdAt', 'updatedAt']) &&
                        incoming().keys().hasOnly([
-                         'uid', 'displayName', 'about', 'phoneNumber', 'phoneVerified',
+                         'uid', 'username', 'displayName', 'about', 'phoneNumber', 'phoneVerified',
                          'email', 'photoUrl', 'bannerUrl', 'fcmToken', 'online', 'lastSeen',
                          'lastBackupUrl', 'lastBackupAt', 'createdAt', 'updatedAt'
                        ]) &&
@@ -209,9 +234,10 @@ service cloud.firestore {
                        isValidId(userId) &&
                        incoming().uid == existing().uid &&
                        incoming().createdAt == existing().createdAt &&
+                       (!('phoneVerified' in incoming().diff(existing()).affectedKeys()) || incoming().phoneVerified == false) &&
                        isValidUserPrivate(incoming()) &&
                        incoming().diff(existing()).affectedKeys().hasOnly([
-                         'displayName', 'about', 'phoneNumber', 'phoneVerified',
+                         'username', 'displayName', 'about', 'phoneNumber', 'phoneVerified',
                          'email', 'photoUrl', 'bannerUrl', 'fcmToken', 'online', 'lastSeen',
                          'lastBackupUrl', 'lastBackupAt', 'updatedAt'
                        ]);
@@ -225,7 +251,7 @@ service cloud.firestore {
                          isValidId(contactId) &&
                          incoming().ownerId == userId &&
                          incoming().keys().hasAll(['ownerId', 'peerUid', 'displayName', 'createdAt', 'updatedAt']) &&
-                         incoming().keys().hasOnly(['ownerId', 'peerUid', 'displayName', 'phoneNumber', 'photoUrl', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['ownerId', 'peerUid', 'username', 'displayName', 'phoneNumber', 'photoUrl', 'createdAt', 'updatedAt']) &&
                          isValidContact(incoming());
         allow update: if isOwner(userId) &&
                          isValidId(contactId) &&
@@ -233,7 +259,7 @@ service cloud.firestore {
                          incoming().createdAt == existing().createdAt &&
                          isValidContact(incoming()) &&
                          incoming().diff(existing()).affectedKeys().hasOnly([
-                           'peerUid', 'displayName', 'phoneNumber', 'photoUrl', 'updatedAt'
+                           'peerUid', 'username', 'displayName', 'phoneNumber', 'photoUrl', 'updatedAt'
                          ]);
         allow delete: if isOwner(userId) && isValidId(contactId);
       }
@@ -266,43 +292,80 @@ service cloud.firestore {
       allow delete: if isSignedIn() && isValidId(chunkId) && existing().ownerId == request.auth.uid;
     }
 
-    // 2. Public Non-PII Presence Profile (exact UID get only, no list scraping)
+    // 2. Public Non-PII Discovery Profile (searchable by authenticated users; owner-only writes)
     match /public_profiles/{userId} {
       allow get: if isSignedIn() && isValidId(userId);
-      allow list: if false;
+      allow list: if isSignedIn();
       allow create: if isOwner(userId) &&
                        isValidId(userId) &&
                        incoming().uid == request.auth.uid &&
                        incoming().keys().hasAll(['uid', 'displayName', 'online', 'updatedAt']) &&
-                       incoming().keys().hasOnly(['uid', 'displayName', 'about', 'photoUrl', 'bannerUrl', 'online', 'lastSeen', 'updatedAt']) &&
-                       isValidPublicProfile(incoming());
+                       incoming().keys().hasOnly(['uid', 'username', 'displayName', 'displayNameLower', 'about', 'photoUrl', 'bannerUrl', 'online', 'lastSeen', 'updatedAt']) &&
+                       isValidPublicProfile(incoming()) &&
+                       (!('username' in incoming()) ||
+                        getAfter(/databases/$(database)/documents/username_lookup/$(incoming().username)).data.uid == request.auth.uid);
       allow update: if isOwner(userId) &&
                        isValidId(userId) &&
                        incoming().uid == existing().uid &&
                        isValidPublicProfile(incoming()) &&
                        incoming().diff(existing()).affectedKeys().hasOnly([
-                         'displayName', 'about', 'photoUrl', 'bannerUrl', 'online', 'lastSeen', 'updatedAt'
-                       ]);
+                         'username', 'displayName', 'displayNameLower', 'about', 'photoUrl', 'bannerUrl', 'online', 'lastSeen', 'updatedAt'
+                       ]) &&
+                       (!('username' in incoming()) ||
+                        ('username' in existing() && incoming().username == existing().username) ||
+                        getAfter(/databases/$(database)/documents/username_lookup/$(incoming().username)).data.uid == request.auth.uid);
       allow delete: if isOwner(userId) && isValidId(userId);
     }
 
-    // 3. Phone Lookup Directory (exact normalized phone digits get only, no list scraping)
-    match /phone_lookup/{phoneKey} {
-      allow get: if isSignedIn() && isValidPhoneKey(phoneKey);
+    // 3. Unique @username Reservation Directory (atomic claim via create, exact get only)
+    match /username_lookup/{usernameKey} {
+      allow get: if isSignedIn() && isValidUsernameKey(usernameKey);
       allow list: if false;
       allow create: if isSignedIn() &&
-                       isValidPhoneKey(phoneKey) &&
+                       isValidUsernameKey(usernameKey) &&
                        incoming().uid == request.auth.uid &&
-                       incoming().keys().hasAll(['uid', 'displayName', 'updatedAt']) &&
-                       incoming().keys().hasOnly(['uid', 'displayName', 'photoUrl', 'updatedAt']) &&
-                       isValidPhoneLookup(incoming());
+                       incoming().username == usernameKey &&
+                       incoming().keys().hasAll(['uid', 'username', 'displayName', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['uid', 'username', 'displayName', 'photoUrl', 'updatedAt']) &&
+                       isValidUsernameLookup(incoming());
       allow update: if isSignedIn() &&
-                       isValidPhoneKey(phoneKey) &&
+                       isValidUsernameKey(usernameKey) &&
                        existing().uid == request.auth.uid &&
                        incoming().uid == existing().uid &&
-                       isValidPhoneLookup(incoming()) &&
+                       incoming().username == existing().username &&
+                       isValidUsernameLookup(incoming()) &&
                        incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoUrl', 'updatedAt']);
-      allow delete: if isSignedIn() && isValidPhoneKey(phoneKey) && existing().uid == request.auth.uid;
+      allow delete: if isSignedIn() && isValidUsernameKey(usernameKey) && existing().uid == request.auth.uid;
+    }
+
+    // 3b. Exact Google Email Lookup (exact get only, no list scraping; owner must have verified token email)
+    match /email_lookup/{emailKey} {
+      allow get: if isSignedIn() && isValidEmailKey(emailKey);
+      allow list: if false;
+      allow create: if isSignedIn() &&
+                       isValidEmailKey(emailKey) &&
+                       incoming().uid == request.auth.uid &&
+                       request.auth.token.email is string &&
+                       request.auth.token.email_verified == true &&
+                       request.auth.token.email.lower() == emailKey &&
+                       incoming().keys().hasAll(['uid', 'displayName', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['uid', 'username', 'displayName', 'photoUrl', 'updatedAt']) &&
+                       isValidEmailLookup(incoming());
+      allow update: if isSignedIn() &&
+                       isValidEmailKey(emailKey) &&
+                       existing().uid == request.auth.uid &&
+                       incoming().uid == existing().uid &&
+                       request.auth.token.email is string &&
+                       request.auth.token.email_verified == true &&
+                       request.auth.token.email.lower() == emailKey &&
+                       isValidEmailLookup(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['username', 'displayName', 'photoUrl', 'updatedAt']);
+      allow delete: if isSignedIn() && isValidEmailKey(emailKey) && existing().uid == request.auth.uid;
+    }
+
+    // Legacy unverified phone lookup is disabled to prevent phone impersonation
+    match /phone_lookup/{phoneKey} {
+      allow read, write: if false;
     }
 
     // 4. Chats (1-on-1 Direct & Group Chats)

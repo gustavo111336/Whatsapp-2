@@ -14,16 +14,6 @@ enum class ThemeMode(val label: String) {
     DARK("Escuro")
 }
 
-data class DeviceContact(
-    val lookupId: String,
-    val name: String,
-    val rawPhone: String,
-    val normalizedDigits: String,
-    val registeredUid: String? = null,
-    val registeredDisplayName: String? = null,
-    val registeredPhotoUrl: String? = null
-)
-
 @Serializable
 data class BackupManifest(
     val version: Int = 1,
@@ -46,6 +36,7 @@ data class BackupSummary(
 @Serializable
 data class ProfileBackupData(
     val uid: String = "",
+    val username: String = "",
     val displayName: String = "",
     val about: String = "",
     val photoUrl: String? = null,

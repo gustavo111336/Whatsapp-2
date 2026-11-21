@@ -26,6 +26,7 @@ data class UserSettings(
     val lastCloudBackupAtMs: Long = 0L,
     val defaultZipExtractUri: String = "",
     val cachedDisplayName: String = "",
+    val cachedUsername: String = "",
     val cachedAbout: String = "",
     val cachedPhotoUrl: String = "",
     val cachedBannerUrl: String = "",
@@ -45,6 +46,7 @@ class SettingsDataStore(private val context: Context) {
         val LAST_CLOUD_BACKUP_AT = longPreferencesKey("last_cloud_backup_at")
         val DEFAULT_ZIP_EXTRACT_URI = stringPreferencesKey("default_zip_extract_uri")
         val CACHED_DISPLAY_NAME = stringPreferencesKey("cached_display_name")
+        val CACHED_USERNAME = stringPreferencesKey("cached_username")
         val CACHED_ABOUT = stringPreferencesKey("cached_about")
         val CACHED_PHOTO_URL = stringPreferencesKey("cached_photo_url")
         val CACHED_BANNER_URL = stringPreferencesKey("cached_banner_url")
@@ -66,6 +68,7 @@ class SettingsDataStore(private val context: Context) {
             lastCloudBackupAtMs = prefs[Keys.LAST_CLOUD_BACKUP_AT] ?: 0L,
             defaultZipExtractUri = prefs[Keys.DEFAULT_ZIP_EXTRACT_URI] ?: "",
             cachedDisplayName = prefs[Keys.CACHED_DISPLAY_NAME] ?: "",
+            cachedUsername = prefs[Keys.CACHED_USERNAME] ?: "",
             cachedAbout = prefs[Keys.CACHED_ABOUT] ?: "",
             cachedPhotoUrl = prefs[Keys.CACHED_PHOTO_URL] ?: "",
             cachedBannerUrl = prefs[Keys.CACHED_BANNER_URL] ?: "",
@@ -127,12 +130,14 @@ class SettingsDataStore(private val context: Context) {
 
     suspend fun saveLocalProfileCache(
         displayName: String? = null,
+        username: String? = null,
         about: String? = null,
         photoUrl: String? = null,
         bannerUrl: String? = null
     ) {
         context.dataStore.edit { prefs ->
             if (displayName != null) prefs[Keys.CACHED_DISPLAY_NAME] = displayName
+            if (username != null) prefs[Keys.CACHED_USERNAME] = username
             if (about != null) prefs[Keys.CACHED_ABOUT] = about
             if (photoUrl != null) prefs[Keys.CACHED_PHOTO_URL] = photoUrl
             if (bannerUrl != null) prefs[Keys.CACHED_BANNER_URL] = bannerUrl
