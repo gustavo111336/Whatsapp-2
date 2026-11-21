@@ -17,6 +17,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,6 +36,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -42,6 +44,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Android
 import androidx.compose.material.icons.rounded.AttachFile
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
@@ -58,8 +61,10 @@ import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.PictureAsPdf
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -103,11 +108,13 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.R
+import com.example.data.local.DEFAULT_AI_MODEL
 import com.example.data.model.ChatMessage
 import com.example.data.model.UiState
 import com.example.data.model.ZipExtractionResult
 import com.example.data.remote.FreeMediaStorageManager
 import com.example.service.ZipArchiveHelper
+import com.example.ui.aichat.AiConfigDialog
 import com.example.ui.components.TypingDotsAnimated
 import com.example.ui.components.Zap2Avatar
 import com.example.ui.components.formatClockTime
@@ -140,6 +147,10 @@ fun ChatDetailScreen(
     val defaultZipExtractUri by viewModel.defaultZipExtractUri.collectAsStateWithLifecycle()
     val errorBanner by viewModel.errorBanner.collectAsStateWithLifecycle()
     val editingMessage by viewModel.editingMessage.collectAsStateWithLifecycle()
+    val aiSuggestions by viewModel.aiSuggestions.collectAsStateWithLifecycle()
+    val isLoadingSuggestions by viewModel.isLoadingSuggestions.collectAsStateWithLifecycle()
+    val showAiConfigPrompt by viewModel.showAiConfigPrompt.collectAsStateWithLifecycle()
+    val userSettings by viewModel.userSettings.collectAsStateWithLifecycle()
 
     val isRecording by viewModel.audioPlayer.isRecording.collectAsStateWithLifecycle()
     val recordingDurationMs by viewModel.audioPlayer.recordingDurationMs.collectAsStateWithLifecycle()
@@ -461,6 +472,23 @@ fun ChatDetailScreen(
                     )
                 }
 
+                val currentMessages = (messagesState as? UiState.Success)?.data.orEmpty()
+                val lastMessageFromOther = currentMessages.lastOrNull()?.let {
+                    it.messageType != "SYSTEM" && it.senderId != viewModel.currentUserId
+                } == true
+
+                if (!isRecording && activeEdit == null) {
+                    AiReplySuggestionsBar(
+                        suggestions = aiSuggestions,
+                        isLoading = isLoadingSuggestions,
+                        activeModel = userSettings.aiModel.ifBlank { DEFAULT_AI_MODEL },
+                        showHintChip = aiSuggestions.isEmpty() && !isLoadingSuggestions && draftText.isBlank() && lastMessageFromOther,
+                        onSuggestClick = viewModel::requestAiReplySuggestions,
+                        onSelectSuggestion = viewModel::applyAiSuggestion,
+                        onDismiss = viewModel::dismissAiSuggestions
+                    )
+                }
+
                 if (isRecording) {
                     VoiceRecordingBar(
                         durationMs = recordingDurationMs,
@@ -477,7 +505,9 @@ fun ChatDetailScreen(
                     MessageComposerBar(
                         text = draftText,
                         isEditing = activeEdit != null,
+                        isLoadingAi = isLoadingSuggestions,
                         onTextChange = viewModel::onDraftChanged,
+                        onSuggestReply = viewModel::requestAiReplySuggestions,
                         onPickImage = {
                             photoPickerLauncher.launch(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
@@ -836,6 +866,165 @@ fun ChatDetailScreen(
                 }
             }
         )
+    }
+
+    if (showAiConfigPrompt) {
+        AiConfigDialog(
+            currentSettings = userSettings,
+            onDismiss = viewModel::dismissAiConfigPrompt,
+            onSave = viewModel::saveQuickAiConfig
+        )
+    }
+}
+
+@Composable
+private fun AiReplySuggestionsBar(
+    suggestions: List<String>,
+    isLoading: Boolean,
+    activeModel: String,
+    showHintChip: Boolean,
+    onSuggestClick: () -> Unit,
+    onSelectSuggestion: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    if (!isLoading && suggestions.isEmpty() && !showHintChip) return
+
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("ai_suggestions_strip")
+    ) {
+        when {
+            isLoading -> {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp
+                    )
+                    Text(
+                        text = "IA ($activeModel) sugerindo respostas…",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+            suggestions.isNotEmpty() -> {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp, bottom = 4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.AutoAwesome,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "Sugestões ($activeModel)",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = onSuggestClick,
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Refresh,
+                                    contentDescription = "Gerar novas sugestões",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            IconButton(
+                                onClick = onDismiss,
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Close,
+                                    contentDescription = "Fechar sugestões",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 12.dp, vertical = 2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        suggestions.forEachIndexed { idx, suggestion ->
+                            Surface(
+                                onClick = { onSelectSuggestion(suggestion) },
+                                shape = RoundedCornerShape(18.dp),
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                modifier = Modifier.testTag("ai_suggestion_chip_$idx")
+                            ) {
+                                Text(
+                                    text = suggestion,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier
+                                        .widthIn(max = 240.dp)
+                                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            showHintChip -> {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.Start
+                ) {
+                    AssistChip(
+                        onClick = onSuggestClick,
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Rounded.AutoAwesome,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        },
+                        label = {
+                            Text(
+                                text = "Sugerir resposta com IA",
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        },
+                        modifier = Modifier.testTag("ai_quick_suggest_chip")
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -1336,7 +1525,9 @@ private fun MessageBubbleRow(
 private fun MessageComposerBar(
     text: String,
     isEditing: Boolean,
+    isLoadingAi: Boolean,
     onTextChange: (String) -> Unit,
+    onSuggestReply: () -> Unit,
     onPickImage: () -> Unit,
     onPickVideo: () -> Unit,
     onPickPdf: () -> Unit,
@@ -1462,6 +1653,24 @@ private fun MessageComposerBar(
                         .weight(1f)
                         .testTag("message_text_input")
                 )
+                IconButton(
+                    onClick = onSuggestReply,
+                    enabled = !isLoadingAi,
+                    modifier = Modifier.testTag("ai_suggest_reply_button")
+                ) {
+                    if (isLoadingAi) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Rounded.AutoAwesome,
+                            contentDescription = "Sugerir resposta com IA",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
             }
         }
 

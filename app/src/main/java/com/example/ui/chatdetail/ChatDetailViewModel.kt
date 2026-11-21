@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.SettingsDataStore
+import com.example.data.local.UserSettings
 import com.example.data.model.ChatMessage
 import com.example.data.model.ChatRoom
 import com.example.data.model.ContactEntry
@@ -17,8 +18,10 @@ import com.example.data.remote.CallSignalingRepository
 import com.example.data.remote.ChatRepository
 import com.example.data.remote.UserAndContactsRepository
 import com.example.data.remote.unwrapFirestoreException
+import com.example.service.AiAssistantService
 import com.example.service.AudioRecorderPlayer
 import com.example.service.ZipArchiveHelper
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -46,6 +49,7 @@ class ChatDetailViewModel(
     private val callSignalingRepository: CallSignalingRepository,
     val audioPlayer: AudioRecorderPlayer,
     private val settingsStore: SettingsDataStore,
+    private val aiAssistantService: AiAssistantService? = null,
     val currentUserId: String
 ) : ViewModel() {
 
@@ -60,6 +64,18 @@ class ChatDetailViewModel(
 
     private val _editingMessage = MutableStateFlow<ChatMessage?>(null)
     val editingMessage: StateFlow<ChatMessage?> = _editingMessage.asStateFlow()
+
+    private val _aiSuggestions = MutableStateFlow<List<String>>(emptyList())
+    val aiSuggestions: StateFlow<List<String>> = _aiSuggestions.asStateFlow()
+
+    private val _isLoadingSuggestions = MutableStateFlow(false)
+    val isLoadingSuggestions: StateFlow<Boolean> = _isLoadingSuggestions.asStateFlow()
+
+    private val _showAiConfigPrompt = MutableStateFlow(false)
+    val showAiConfigPrompt: StateFlow<Boolean> = _showAiConfigPrompt.asStateFlow()
+
+    val userSettings: StateFlow<UserSettings> = settingsStore.settingsFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UserSettings())
 
     val uploadProgress: StateFlow<UploadProgressState?> = chatRepository.uploadProgress
 
@@ -213,6 +229,7 @@ class ChatDetailViewModel(
         val targetEdit = _editingMessage.value
         _draftText.value = ""
         _editingMessage.value = null
+        _aiSuggestions.value = emptyList()
         clearTypingStatusNow(room)
 
         viewModelScope.launch {
@@ -434,6 +451,65 @@ class ChatDetailViewModel(
             chatRepository.leaveGroup(room)
                 .onSuccess { onLeft() }
                 .onFailure { _errorBanner.value = it.localizedMessage }
+        }
+    }
+
+    fun requestAiReplySuggestions() {
+        val service = aiAssistantService ?: return
+        if (_isLoadingSuggestions.value) return
+        viewModelScope.launch {
+            val settings = settingsStore.settingsFlow.first()
+            if (settings.aiApiKey.isBlank()) {
+                _showAiConfigPrompt.value = true
+                return@launch
+            }
+            _isLoadingSuggestions.value = true
+            _errorBanner.value = null
+            val title = chatRoom.value?.resolveDisplayTitle(currentUserId) ?: "Conversa"
+            val messages = (messagesState.value as? UiState.Success)?.data.orEmpty()
+            try {
+                service.suggestReplies(
+                    settings = settings,
+                    chatTitle = title,
+                    recentMessages = messages,
+                    currentUserId = currentUserId
+                ).onSuccess { list ->
+                    _aiSuggestions.value = list
+                }.onFailure { err ->
+                    _errorBanner.value = err.localizedMessage ?: "Falha ao sugerir respostas com IA."
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } finally {
+                _isLoadingSuggestions.value = false
+            }
+        }
+    }
+
+    fun applyAiSuggestion(suggestion: String) {
+        onDraftChanged(suggestion)
+    }
+
+    fun dismissAiSuggestions() {
+        _aiSuggestions.value = emptyList()
+    }
+
+    fun dismissAiConfigPrompt() {
+        _showAiConfigPrompt.value = false
+    }
+
+    fun saveQuickAiConfig(
+        apiKey: String,
+        model: String,
+        provider: String,
+        customBaseUrl: String
+    ) {
+        viewModelScope.launch {
+            settingsStore.saveAiConfig(apiKey, model, provider, customBaseUrl)
+            _showAiConfigPrompt.value = false
+            if (apiKey.isNotBlank()) {
+                requestAiReplySuggestions()
+            }
         }
     }
 

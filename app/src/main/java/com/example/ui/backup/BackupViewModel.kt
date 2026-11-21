@@ -395,6 +395,23 @@ class BackupViewModel(
         viewModelScope.launch { settingsStore.setNotificationsEnabled(enabled) }
     }
 
+    fun saveAiConfig(
+        apiKey: String,
+        model: String,
+        provider: String,
+        customBaseUrl: String
+    ) {
+        viewModelScope.launch {
+            settingsStore.saveAiConfig(apiKey, model, provider, customBaseUrl)
+            val savedModel = model.trim().ifBlank { "gemini-3.8-flash" }
+            _statusMessage.value = if (apiKey.isBlank()) {
+                "API Key da IA removida. Modelo padrão: $savedModel."
+            } else {
+                "Configuração da IA salva (modelo ativo: $savedModel)!"
+            }
+        }
+    }
+
     fun setDefaultZipExtractUri(uriString: String) {
         viewModelScope.launch {
             settingsStore.setDefaultZipExtractUri(uriString)

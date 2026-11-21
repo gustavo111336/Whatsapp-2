@@ -25,8 +25,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.AddComment
 import androidx.compose.material.icons.rounded.Android
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.FolderZip
@@ -69,6 +71,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.data.local.DEFAULT_AI_MODEL
 import com.example.data.model.ChatRoom
 import com.example.data.model.PublicProfile
 import com.example.data.model.UiState
@@ -83,6 +86,7 @@ fun ChatsListScreen(
     onOpenChat: (String) -> Unit,
     onNavigateToContacts: () -> Unit,
     onOpenProfile: () -> Unit = {},
+    onOpenAiChat: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val chatsState by viewModel.chatsState.collectAsStateWithLifecycle()
@@ -245,6 +249,66 @@ fun ChatsListScreen(
                     .padding(vertical = 6.dp)
                     .testTag("search_chats_input")
             )
+
+            // AI Assistant Direct Chat Button Card
+            val activeAiModel = userSettings.aiModel.ifBlank { DEFAULT_AI_MODEL }
+            val hasAiKey = userSettings.aiApiKey.isNotBlank()
+            Surface(
+                onClick = onOpenAiChat,
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 6.dp)
+                    .testTag("chats_ai_banner_button")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Surface(
+                        shape = Zap2ExpressiveShapes.SquircleAvatar,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Rounded.AutoAwesome,
+                                contentDescription = "Assistente IA",
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Conversar com IA",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                        Text(
+                            text = if (hasAiKey) {
+                                "Modelo: $activeAiModel • use /model para trocar"
+                            } else {
+                                "Toque para colar sua API Key e conversar"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                        contentDescription = "Abrir chat da IA",
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                }
+            }
 
             if (actionMessage != null) {
                 Surface(
@@ -423,6 +487,14 @@ fun ChatsListScreen(
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            SmallFloatingActionButton(
+                onClick = onOpenAiChat,
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.testTag("fab_ai_chat")
+            ) {
+                Icon(Icons.Rounded.AutoAwesome, contentDescription = "Conversar com IA")
+            }
             SmallFloatingActionButton(
                 onClick = { showCreateGroup = true },
                 containerColor = MaterialTheme.colorScheme.tertiaryContainer,

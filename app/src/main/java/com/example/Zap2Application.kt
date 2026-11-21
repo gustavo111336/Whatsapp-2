@@ -23,6 +23,7 @@ import com.example.data.remote.ChatRepository
 import com.example.data.remote.FreeMediaStorageManager
 import com.example.data.remote.UserAndContactsRepository
 import com.example.data.remote.WebRtcCallManager
+import com.example.service.AiAssistantService
 import com.example.service.AppUpdateCoordinator
 import com.example.service.AppUpdateManager
 import com.example.service.AudioRecorderPlayer
@@ -37,9 +38,9 @@ import kotlinx.coroutines.launch
 class AppContainer(context: Context) {
     private val appContext = context.applicationContext
     val databaseId: String = appContext.getString(R.string.firestore_database_id)
-    val firestore: FirebaseFirestore = FirebaseFirestore.getInstance(databaseId)
+    val firestore: FirebaseFirestore by lazy { FirebaseFirestore.getInstance(databaseId) }
     val settingsStore: SettingsDataStore = SettingsDataStore(appContext)
-    val authRepository: AuthRepository = AuthRepository()
+    val authRepository: AuthRepository by lazy { AuthRepository() }
 
     val freeStorageManager: FreeMediaStorageManager by lazy {
         FreeMediaStorageManager(appContext, firestore, settingsStore)
@@ -59,7 +60,7 @@ class AppContainer(context: Context) {
         BackupRepository(appContext, firestore, settingsStore, freeStorageManager = freeStorageManager)
     }
 
-    val callSignalingRepository: CallSignalingRepository = CallSignalingRepository(firestore)
+    val callSignalingRepository: CallSignalingRepository by lazy { CallSignalingRepository(firestore) }
     val webRtcCallManager: WebRtcCallManager by lazy {
         WebRtcCallManager(appContext, callSignalingRepository)
     }
@@ -71,6 +72,9 @@ class AppContainer(context: Context) {
     }
     val appUpdateCoordinator: AppUpdateCoordinator by lazy {
         AppUpdateCoordinator(appUpdateManager, settingsStore)
+    }
+    val aiAssistantService: AiAssistantService by lazy {
+        AiAssistantService(appContext)
     }
 }
 

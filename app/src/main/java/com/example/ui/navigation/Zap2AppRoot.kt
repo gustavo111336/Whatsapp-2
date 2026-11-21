@@ -72,6 +72,8 @@ import com.example.R
 import com.example.data.local.UserSettings
 import com.example.service.Zap2NotificationHelper
 import com.example.service.Zap2NotificationNavigation
+import com.example.ui.aichat.AiChatScreen
+import com.example.ui.aichat.AiChatViewModel
 import com.example.ui.auth.AuthScreen
 import com.example.ui.backup.BackupAndSettingsScreen
 import com.example.ui.backup.BackupViewModel
@@ -517,6 +519,11 @@ private fun Zap2AuthenticatedShell(
                                             restoreState = true
                                         }
                                     },
+                                    onOpenAiChat = {
+                                        navController.navigate(Zap2Route.AiChatRoute) {
+                                            launchSingleTop = true
+                                        }
+                                    },
                                     modifier = Modifier.statusBarsPadding()
                                 )
                             }
@@ -551,6 +558,11 @@ private fun Zap2AuthenticatedShell(
                                 BackupAndSettingsScreen(
                                     viewModel = backupViewModel,
                                     onSignedOut = {},
+                                    onOpenAiChat = {
+                                        navController.navigate(Zap2Route.AiChatRoute) {
+                                            launchSingleTop = true
+                                        }
+                                    },
                                     modifier = Modifier.statusBarsPadding()
                                 )
                             }
@@ -568,6 +580,7 @@ private fun Zap2AuthenticatedShell(
                                                 callSignalingRepository = container.callSignalingRepository,
                                                 audioPlayer = container.audioRecorderPlayer,
                                                 settingsStore = container.settingsStore,
+                                                aiAssistantService = container.aiAssistantService,
                                                 currentUserId = currentUserId
                                             )
                                         }
@@ -604,6 +617,7 @@ private fun Zap2AuthenticatedShell(
                                                 callSignalingRepository = container.callSignalingRepository,
                                                 audioPlayer = container.audioRecorderPlayer,
                                                 settingsStore = container.settingsStore,
+                                                aiAssistantService = container.aiAssistantService,
                                                 currentUserId = currentUserId
                                             )
                                         }
@@ -627,6 +641,25 @@ private fun Zap2AuthenticatedShell(
                                     isVideo = route.isVideo,
                                     callManager = container.webRtcCallManager,
                                     onCallEnded = { navController.popBackStack() }
+                                )
+                            }
+
+                            composable<Zap2Route.AiChatRoute> {
+                                val aiChatVm: AiChatViewModel = viewModel(
+                                    key = "ai_chat_$currentUserId",
+                                    factory = viewModelFactory {
+                                        initializer {
+                                            AiChatViewModel(
+                                                aiService = container.aiAssistantService,
+                                                settingsStore = container.settingsStore,
+                                                currentUserId = currentUserId
+                                            )
+                                        }
+                                    }
+                                )
+                                AiChatScreen(
+                                    viewModel = aiChatVm,
+                                    onBack = { navController.popBackStack() }
                                 )
                             }
                         }

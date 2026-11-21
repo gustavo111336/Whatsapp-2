@@ -27,4 +27,7 @@ sealed interface Zap2Route {
         val isIncoming: Boolean,
         val isVideo: Boolean
     ) : Zap2Route
+
+    @Serializable
+    data object AiChatRoute : Zap2Route
 }

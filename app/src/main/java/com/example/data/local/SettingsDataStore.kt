@@ -19,6 +19,11 @@ const val STORAGE_MODE_AUTO = "AUTO"
 const val STORAGE_MODE_FIRESTORE = "FIRESTORE"
 const val STORAGE_MODE_GITHUB = "GITHUB"
 
+const val DEFAULT_AI_MODEL = "gemini-3.8-flash"
+const val AI_PROVIDER_AUTO = "AUTO"
+const val AI_PROVIDER_GEMINI = "GEMINI"
+const val AI_PROVIDER_OPENAI = "OPENAI_COMPATIBLE"
+
 data class UserSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val dynamicColor: Boolean = true,
@@ -44,7 +49,11 @@ data class UserSettings(
     val pendingInstallReleaseId: Long = 0L,
     val pendingInstallCommitSha: String = "",
     val pendingInstallRunNumber: Int = 0,
-    val pendingInstallPreUpdateTimeMs: Long = 0L
+    val pendingInstallPreUpdateTimeMs: Long = 0L,
+    val aiApiKey: String = "",
+    val aiModel: String = DEFAULT_AI_MODEL,
+    val aiProvider: String = AI_PROVIDER_AUTO,
+    val aiCustomBaseUrl: String = ""
 )
 
 class SettingsDataStore(private val context: Context) {
@@ -74,6 +83,10 @@ class SettingsDataStore(private val context: Context) {
         val PENDING_INSTALL_COMMIT_SHA = stringPreferencesKey("pending_install_commit_sha")
         val PENDING_INSTALL_RUN_NUMBER = intPreferencesKey("pending_install_run_number")
         val PENDING_INSTALL_PRE_UPDATE_TIME_MS = longPreferencesKey("pending_install_pre_update_time_ms")
+        val AI_API_KEY = stringPreferencesKey("ai_api_key")
+        val AI_MODEL = stringPreferencesKey("ai_model")
+        val AI_PROVIDER = stringPreferencesKey("ai_provider")
+        val AI_CUSTOM_BASE_URL = stringPreferencesKey("ai_custom_base_url")
     }
 
     val settingsFlow: Flow<UserSettings> = context.dataStore.data.map { prefs ->
@@ -104,7 +117,11 @@ class SettingsDataStore(private val context: Context) {
             pendingInstallReleaseId = prefs[Keys.PENDING_INSTALL_RELEASE_ID] ?: 0L,
             pendingInstallCommitSha = prefs[Keys.PENDING_INSTALL_COMMIT_SHA] ?: "",
             pendingInstallRunNumber = prefs[Keys.PENDING_INSTALL_RUN_NUMBER] ?: 0,
-            pendingInstallPreUpdateTimeMs = prefs[Keys.PENDING_INSTALL_PRE_UPDATE_TIME_MS] ?: 0L
+            pendingInstallPreUpdateTimeMs = prefs[Keys.PENDING_INSTALL_PRE_UPDATE_TIME_MS] ?: 0L,
+            aiApiKey = prefs[Keys.AI_API_KEY] ?: "",
+            aiModel = (prefs[Keys.AI_MODEL] ?: DEFAULT_AI_MODEL).ifBlank { DEFAULT_AI_MODEL },
+            aiProvider = (prefs[Keys.AI_PROVIDER] ?: AI_PROVIDER_AUTO).ifBlank { AI_PROVIDER_AUTO },
+            aiCustomBaseUrl = prefs[Keys.AI_CUSTOM_BASE_URL] ?: ""
         )
     }
 
@@ -209,6 +226,29 @@ class SettingsDataStore(private val context: Context) {
             if (about != null) prefs[Keys.CACHED_ABOUT] = about
             if (photoUrl != null) prefs[Keys.CACHED_PHOTO_URL] = photoUrl
             if (bannerUrl != null) prefs[Keys.CACHED_BANNER_URL] = bannerUrl
+        }
+    }
+
+    suspend fun saveAiConfig(
+        apiKey: String,
+        model: String,
+        provider: String,
+        customBaseUrl: String
+    ) {
+        val cleanModel = model.trim().trim('*', '`', '"', '\'').ifBlank { DEFAULT_AI_MODEL }
+        val cleanProvider = provider.trim().ifBlank { AI_PROVIDER_AUTO }
+        context.dataStore.edit { prefs ->
+            prefs[Keys.AI_API_KEY] = apiKey.trim()
+            prefs[Keys.AI_MODEL] = cleanModel
+            prefs[Keys.AI_PROVIDER] = cleanProvider
+            prefs[Keys.AI_CUSTOM_BASE_URL] = customBaseUrl.trim()
+        }
+    }
+
+    suspend fun setAiModel(model: String) {
+        val cleanModel = model.trim().trim('*', '`', '"', '\'').ifBlank { DEFAULT_AI_MODEL }
+        context.dataStore.edit { prefs ->
+            prefs[Keys.AI_MODEL] = cleanModel
         }
     }
 }

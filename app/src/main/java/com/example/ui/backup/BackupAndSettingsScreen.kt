@@ -14,6 +14,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -33,6 +35,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.AlternateEmail
 import androidx.compose.material.icons.rounded.Archive
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material.icons.rounded.CloudDone
 import androidx.compose.material.icons.rounded.CloudDownload
@@ -51,6 +54,8 @@ import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Videocam
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -58,6 +63,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -80,9 +86,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.BuildConfig
+import com.example.data.local.AI_PROVIDER_AUTO
+import com.example.data.local.AI_PROVIDER_GEMINI
+import com.example.data.local.AI_PROVIDER_OPENAI
+import com.example.data.local.DEFAULT_AI_MODEL
 import com.example.data.local.STORAGE_MODE_AUTO
 import com.example.data.local.STORAGE_MODE_FIRESTORE
 import com.example.data.local.STORAGE_MODE_GITHUB
@@ -91,16 +102,19 @@ import com.example.data.model.ThemeMode
 import com.example.data.remote.FreeMediaStorageManager
 import com.example.service.Zap2NotificationHelper
 import com.example.service.ZipArchiveHelper
+import com.example.ui.aichat.SUGGESTED_AI_MODELS
 import com.example.ui.components.Zap2Avatar
 import com.example.ui.components.Zap2ProfileBanner
 import com.example.ui.components.formatRelativeDateTime
 import java.util.Date
 import java.util.Locale
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun BackupAndSettingsScreen(
     viewModel: BackupViewModel,
     onSignedOut: () -> Unit,
+    onOpenAiChat: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -150,6 +164,11 @@ fun BackupAndSettingsScreen(
     var githubBranchInput by remember(settings.githubBranch) { mutableStateOf(settings.githubBranch) }
     var githubTokenInput by remember(settings.githubToken) { mutableStateOf(settings.githubToken) }
     var appUpdateUrlInput by remember(settings.appUpdateUrl) { mutableStateOf(settings.appUpdateUrl) }
+    var aiApiKeyInput by remember(settings.aiApiKey) { mutableStateOf(settings.aiApiKey) }
+    var aiModelInput by remember(settings.aiModel) { mutableStateOf(settings.aiModel.ifBlank { DEFAULT_AI_MODEL }) }
+    var aiProviderInput by remember(settings.aiProvider) { mutableStateOf(settings.aiProvider) }
+    var aiCustomBaseUrlInput by remember(settings.aiCustomBaseUrl) { mutableStateOf(settings.aiCustomBaseUrl) }
+    var showAiKeyPlain by remember { mutableStateOf(false) }
 
     val bannerGalleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -925,6 +944,161 @@ fun BackupAndSettingsScreen(
                                     .testTag("save_free_storage_button")
                             ) {
                                 Text("Salvar Modo")
+                            }
+                        }
+                    }
+                }
+            }
+
+            // AI Assistant & Smart Reply Card (API Key + Custom Model)
+            item {
+                Card(
+                    shape = RoundedCornerShape(26.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.AutoAwesome,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "Inteligência Artificial (API Key)",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Text(
+                            text = "Sugere respostas dentro das conversas e libera o Chat com IA. Escreva qualquer modelo abaixo ou troque no chat usando /model nome-do-modelo.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        OutlinedTextField(
+                            value = aiApiKeyInput,
+                            onValueChange = { aiApiKeyInput = it },
+                            label = { Text("API Key (Gemini, OpenAI, Groq, OpenRouter)") },
+                            placeholder = { Text("AIza... ou sk-...") },
+                            singleLine = true,
+                            visualTransformation = if (showAiKeyPlain) {
+                                VisualTransformation.None
+                            } else {
+                                PasswordVisualTransformation()
+                            },
+                            trailingIcon = {
+                                IconButton(onClick = { showAiKeyPlain = !showAiKeyPlain }) {
+                                    Icon(
+                                        imageVector = if (showAiKeyPlain) {
+                                            Icons.Rounded.VisibilityOff
+                                        } else {
+                                            Icons.Rounded.Visibility
+                                        },
+                                        contentDescription = if (showAiKeyPlain) "Ocultar chave" else "Mostrar chave"
+                                    )
+                                }
+                            },
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("ai_api_key_input")
+                        )
+
+                        OutlinedTextField(
+                            value = aiModelInput,
+                            onValueChange = { aiModelInput = it },
+                            label = { Text("Modelo de IA (escreva o que quiser)") },
+                            placeholder = { Text(DEFAULT_AI_MODEL) },
+                            singleLine = true,
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("ai_model_input")
+                        )
+
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            SUGGESTED_AI_MODELS.forEach { preset ->
+                                FilterChip(
+                                    selected = aiModelInput.trim().equals(preset, ignoreCase = true),
+                                    onClick = { aiModelInput = preset },
+                                    label = { Text(preset, style = MaterialTheme.typography.labelSmall) }
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(
+                                AI_PROVIDER_AUTO to "Auto",
+                                AI_PROVIDER_GEMINI to "Gemini",
+                                AI_PROVIDER_OPENAI to "OpenAI/Outro"
+                            ).forEach { (key, label) ->
+                                FilterChip(
+                                    selected = aiProviderInput == key,
+                                    onClick = { aiProviderInput = key },
+                                    label = { Text(label) }
+                                )
+                            }
+                        }
+
+                        if (aiProviderInput == AI_PROVIDER_OPENAI || aiCustomBaseUrlInput.isNotBlank()) {
+                            OutlinedTextField(
+                                value = aiCustomBaseUrlInput,
+                                onValueChange = { aiCustomBaseUrlInput = it },
+                                label = { Text("Endpoint Base URL (opcional)") },
+                                placeholder = { Text("https://api.openai.com/v1/chat/completions") },
+                                singleLine = true,
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("ai_base_url_input")
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    viewModel.saveAiConfig(
+                                        apiKey = aiApiKeyInput,
+                                        model = aiModelInput,
+                                        provider = aiProviderInput,
+                                        customBaseUrl = aiCustomBaseUrlInput
+                                    )
+                                },
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                                    .testTag("save_ai_config_button")
+                            ) {
+                                Text("Salvar IA")
+                            }
+                            OutlinedButton(
+                                onClick = onOpenAiChat,
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                                    .testTag("settings_open_ai_chat_button")
+                            ) {
+                                Icon(Icons.Rounded.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Text(" Abrir Chat IA", modifier = Modifier.padding(start = 6.dp))
                             }
                         }
                     }
