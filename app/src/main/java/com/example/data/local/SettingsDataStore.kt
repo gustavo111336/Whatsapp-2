@@ -34,7 +34,8 @@ data class UserSettings(
     val githubRepo: String = "",
     val githubBranch: String = "main",
     val githubToken: String = "",
-    val notificationsEnabled: Boolean = true
+    val notificationsEnabled: Boolean = true,
+    val appUpdateUrl: String = ""
 )
 
 class SettingsDataStore(private val context: Context) {
@@ -55,6 +56,7 @@ class SettingsDataStore(private val context: Context) {
         val GITHUB_BRANCH = stringPreferencesKey("github_branch")
         val GITHUB_TOKEN = stringPreferencesKey("github_token")
         val NOTIFICATIONS_ENABLED = booleanPreferencesKey("notifications_enabled")
+        val APP_UPDATE_URL = stringPreferencesKey("app_update_url")
     }
 
     val settingsFlow: Flow<UserSettings> = context.dataStore.data.map { prefs ->
@@ -76,7 +78,8 @@ class SettingsDataStore(private val context: Context) {
             githubRepo = prefs[Keys.GITHUB_REPO] ?: "",
             githubBranch = (prefs[Keys.GITHUB_BRANCH] ?: "main").ifBlank { "main" },
             githubToken = prefs[Keys.GITHUB_TOKEN] ?: "",
-            notificationsEnabled = prefs[Keys.NOTIFICATIONS_ENABLED] ?: true
+            notificationsEnabled = prefs[Keys.NOTIFICATIONS_ENABLED] ?: true,
+            appUpdateUrl = prefs[Keys.APP_UPDATE_URL] ?: ""
         )
     }
 
@@ -106,6 +109,10 @@ class SettingsDataStore(private val context: Context) {
 
     suspend fun setNotificationsEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.NOTIFICATIONS_ENABLED] = enabled }
+    }
+
+    suspend fun setAppUpdateUrl(url: String) {
+        context.dataStore.edit { it[Keys.APP_UPDATE_URL] = url.trim() }
     }
 
     suspend fun saveFreeStorageConfig(

@@ -5,4 +5,5 @@
     <files-path name="zap2_backups" path="backups/" />
     <external-files-path name="zap2_ext_files" path="." />
     <cache-path name="zap2_cache" path="." />
+    <cache-path name="apk_updates" path="updates/" />
 </paths>

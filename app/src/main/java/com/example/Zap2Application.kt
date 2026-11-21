@@ -23,6 +23,7 @@ import com.example.data.remote.ChatRepository
 import com.example.data.remote.FreeMediaStorageManager
 import com.example.data.remote.UserAndContactsRepository
 import com.example.data.remote.WebRtcCallManager
+import com.example.service.AppUpdateManager
 import com.example.service.AudioRecorderPlayer
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
@@ -63,6 +64,9 @@ class AppContainer(context: Context) {
     }
     val audioRecorderPlayer: AudioRecorderPlayer by lazy {
         AudioRecorderPlayer(appContext)
+    }
+    val appUpdateManager: AppUpdateManager by lazy {
+        AppUpdateManager(appContext)
     }
 }
 

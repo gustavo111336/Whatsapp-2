@@ -518,7 +518,8 @@ fun ZipExtractionDialogs(
 @Composable
 fun ApkInstallPermissionDialog(
     onOpenSettings: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    description: String = "Para instalar aplicativos enviados no chat, autorize \"Instalar apps desconhecidos\" para o WhatwillIdo nas configurações do Android."
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -532,7 +533,7 @@ fun ApkInstallPermissionDialog(
         title = { Text("Permissão para instalar APK") },
         text = {
             Text(
-                text = "Para instalar aplicativos enviados no chat, autorize \"Instalar apps desconhecidos\" para o WhatwillIdo nas configurações do Android.",
+                text = description,
                 style = MaterialTheme.typography.bodyMedium
             )
         },
@@ -561,6 +562,10 @@ fun launchApkInstall(
     onNeedPermission: () -> Unit,
     onError: (String) -> Unit
 ) {
+    if (!apkFile.exists() || !apkFile.isFile || apkFile.length() <= 0L) {
+        onError("Arquivo APK inválido, vazio ou não encontrado.")
+        return
+    }
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
         !context.packageManager.canRequestPackageInstalls()
     ) {

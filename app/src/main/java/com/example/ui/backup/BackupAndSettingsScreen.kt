@@ -49,6 +49,7 @@ import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.Storage
+import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -66,6 +67,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -80,7 +82,11 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.BuildConfig
 import com.example.data.local.STORAGE_MODE_AUTO
 import com.example.data.local.STORAGE_MODE_FIRESTORE
 import com.example.data.local.STORAGE_MODE_GITHUB
@@ -89,10 +95,12 @@ import com.example.data.model.ThemeMode
 import com.example.data.remote.FreeMediaStorageManager
 import com.example.service.Zap2NotificationHelper
 import com.example.service.ZipArchiveHelper
+import com.example.ui.chatdetail.ApkInstallPermissionDialog
 import com.example.ui.components.Zap2Avatar
 import com.example.ui.components.Zap2ProfileBanner
 import com.example.ui.components.formatRelativeDateTime
 import java.util.Date
+import java.util.Locale
 
 @Composable
 fun BackupAndSettingsScreen(
@@ -109,6 +117,18 @@ fun BackupAndSettingsScreen(
     val pendingExportFile by viewModel.pendingExportFile.collectAsStateWithLifecycle()
     val mediaUploadProgress by viewModel.mediaUploadProgress.collectAsStateWithLifecycle()
     val usernameAvailability by viewModel.usernameAvailability.collectAsStateWithLifecycle()
+    val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.onResumeAfterInstallSettings()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     val effectiveBannerUrl = myProfile?.bannerUrl?.takeIf { it.isNotBlank() }
         ?: settings.cachedBannerUrl.takeIf { it.isNotBlank() }
@@ -145,6 +165,7 @@ fun BackupAndSettingsScreen(
     var githubRepoInput by remember(settings.githubRepo) { mutableStateOf(settings.githubRepo) }
     var githubBranchInput by remember(settings.githubBranch) { mutableStateOf(settings.githubBranch) }
     var githubTokenInput by remember(settings.githubToken) { mutableStateOf(settings.githubToken) }
+    var appUpdateUrlInput by remember(settings.appUpdateUrl) { mutableStateOf(settings.appUpdateUrl) }
 
     val bannerGalleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -1097,6 +1118,171 @@ fun BackupAndSettingsScreen(
                 }
             }
 
+            // App Self-Update (.apk) Card
+            item {
+                Card(
+                    shape = RoundedCornerShape(26.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                Icons.Rounded.SystemUpdate,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "Atualização do App (.apk)",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Text(
+                            text = "Versão instalada: v${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE}) • ${BuildConfig.APPLICATION_ID}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Baixe uma atualização direto de uma URL (.apk, .json ou usuário/repositório GitHub) com verificação de integridade e instalação pelo instalador nativo do Android.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        OutlinedTextField(
+                            value = appUpdateUrlInput,
+                            onValueChange = { appUpdateUrlInput = it },
+                            label = { Text("URL do APK, JSON ou usuario/repo GitHub") },
+                            placeholder = { Text("https://.../WhatwillIdo-debug.apk ou usuario/repo") },
+                            singleLine = true,
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("app_update_url_input")
+                        )
+
+                        if (appUpdateState.isResolving || appUpdateState.isDownloading) {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                val fraction = appUpdateState.downloadFraction
+                                if (fraction != null) {
+                                    LinearProgressIndicator(
+                                        progress = { fraction },
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                } else {
+                                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                }
+                                val mbDone = String.format(
+                                    Locale.getDefault(),
+                                    "%.1f MB",
+                                    appUpdateState.downloadedBytes / (1024f * 1024f)
+                                )
+                                val progressLabel = if (appUpdateState.isResolving) {
+                                    "Consultando versão..."
+                                } else if (fraction != null) {
+                                    "Baixando APK: ${(fraction * 100).toInt()}% ($mbDone)"
+                                } else {
+                                    "Baixando APK: $mbDone"
+                                }
+                                Text(
+                                    text = progressLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+
+                        appUpdateState.errorText?.let { err ->
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = MaterialTheme.colorScheme.errorContainer,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = err,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    modifier = Modifier.padding(12.dp)
+                                )
+                            }
+                        }
+
+                        appUpdateState.statusText?.let { msg ->
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = msg,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.padding(12.dp)
+                                )
+                            }
+                        }
+
+                        Button(
+                            onClick = {
+                                viewModel.downloadUpdateFromUrl(
+                                    rawUrl = appUpdateUrlInput,
+                                    githubToken = githubTokenInput
+                                )
+                            },
+                            enabled = !appUpdateState.isResolving && !appUpdateState.isDownloading && appUpdateUrlInput.isNotBlank(),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .testTag("app_update_download_button")
+                        ) {
+                            Icon(Icons.Rounded.CloudDownload, contentDescription = null)
+                            Text(" Baixar e Instalar APK", modifier = Modifier.padding(start = 6.dp))
+                        }
+
+                        if (githubRepoInput.isNotBlank()) {
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.downloadLatestGitHubReleaseUpdate(
+                                        repo = githubRepoInput,
+                                        githubToken = githubTokenInput
+                                    )
+                                },
+                                enabled = !appUpdateState.isResolving && !appUpdateState.isDownloading,
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
+                                    .testTag("app_update_github_button")
+                            ) {
+                                Text("Atualizar via última Release ($githubRepoInput)")
+                            }
+                        }
+
+                        if (appUpdateState.verifiedApk != null && !appUpdateState.isDownloading) {
+                            OutlinedButton(
+                                onClick = { viewModel.installDownloadedUpdate() },
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
+                                    .testTag("app_update_install_button")
+                            ) {
+                                Icon(Icons.Rounded.SystemUpdate, contentDescription = null)
+                                Text(" Instalar APK baixado", modifier = Modifier.padding(start = 6.dp))
+                            }
+                        }
+                    }
+                }
+            }
+
             // Sign Out
             item {
                 OutlinedButton(
@@ -1373,6 +1559,19 @@ fun BackupAndSettingsScreen(
                     Text("Fechar")
                 }
             }
+        )
+    }
+
+    if (appUpdateState.needsInstallPermissionDialog) {
+        ApkInstallPermissionDialog(
+            description = "Para concluir a atualização do WhatwillIdo, autorize \"Instalar apps desconhecidos\" nas configurações do Android.",
+            onOpenSettings = {
+                viewModel.dismissUpdateInstallPermissionDialog()
+                runCatching {
+                    context.startActivity(viewModel.buildManageUnknownAppSourcesIntent())
+                }
+            },
+            onDismiss = viewModel::dismissUpdateInstallPermissionDialog
         )
     }
 }

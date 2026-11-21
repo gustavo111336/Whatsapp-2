@@ -14,6 +14,10 @@ import com.example.data.remote.BackupRepository
 import com.example.data.remote.FreeMediaStorageManager
 import com.example.data.remote.UserAndContactsRepository
 import com.example.data.remote.unwrapFirestoreException
+import com.example.service.ApkInstallLaunchResult
+import com.example.service.AppUpdateManager
+import com.example.service.AppUpdateReleaseInfo
+import com.example.service.VerifiedApkInfo
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -34,12 +38,27 @@ sealed interface UsernameAvailability {
     data class Invalid(val reason: String) : UsernameAvailability
 }
 
+data class AppUpdateUiState(
+    val isResolving: Boolean = false,
+    val isDownloading: Boolean = false,
+    val downloadFraction: Float? = null,
+    val downloadedBytes: Long = 0L,
+    val totalBytes: Long = -1L,
+    val resolvedRelease: AppUpdateReleaseInfo? = null,
+    val verifiedApk: VerifiedApkInfo? = null,
+    val needsInstallPermissionDialog: Boolean = false,
+    val awaitingInstallPermission: Boolean = false,
+    val statusText: String? = null,
+    val errorText: String? = null
+)
+
 class BackupViewModel(
     private val authRepository: AuthRepository,
     private val userRepository: UserAndContactsRepository,
     private val backupRepository: BackupRepository,
     private val settingsStore: SettingsDataStore,
     private val freeStorageManager: FreeMediaStorageManager,
+    private val appUpdateManager: AppUpdateManager,
     val currentUserId: String
 ) : ViewModel() {
 
@@ -72,10 +91,22 @@ class BackupViewModel(
     private val _usernameAvailability = MutableStateFlow<UsernameAvailability>(UsernameAvailability.Idle)
     val usernameAvailability: StateFlow<UsernameAvailability> = _usernameAvailability.asStateFlow()
 
+    private val _appUpdateState = MutableStateFlow(AppUpdateUiState())
+    val appUpdateState: StateFlow<AppUpdateUiState> = _appUpdateState.asStateFlow()
+
     private var usernameCheckJob: Job? = null
+    private var appUpdateJob: Job? = null
 
     init {
         refreshLocalBackups()
+        appUpdateManager.getCachedUpdateApk()?.let { cached ->
+            appUpdateManager.validateApkFile(cached).onSuccess { verified ->
+                _appUpdateState.value = _appUpdateState.value.copy(
+                    verifiedApk = verified,
+                    statusText = "APK pronto para instalar (${verified.sizeBytes / (1024 * 1024)} MB)."
+                )
+            }
+        }
     }
 
     fun refreshLocalBackups() {
@@ -408,6 +439,142 @@ class BackupViewModel(
             onComplete()
         }
     }
+
+    fun downloadUpdateFromUrl(rawUrl: String, githubToken: String = "") {
+        val cleanInput = rawUrl.trim()
+        if (cleanInput.isBlank()) {
+            _appUpdateState.value = _appUpdateState.value.copy(
+                errorText = "Informe a URL do .apk, JSON de release ou repositório GitHub."
+            )
+            return
+        }
+        appUpdateJob?.cancel()
+        appUpdateJob = viewModelScope.launch {
+            settingsStore.setAppUpdateUrl(cleanInput)
+            _appUpdateState.value = AppUpdateUiState(
+                isResolving = true,
+                statusText = "Verificando atualização..."
+            )
+            val resolved = appUpdateManager.resolveUpdateSource(cleanInput, githubToken)
+            val release = resolved.getOrElse { err ->
+                _appUpdateState.value = AppUpdateUiState(
+                    errorText = err.localizedMessage ?: "Não foi possível localizar o APK de atualização."
+                )
+                return@launch
+            }
+            downloadAndLaunchRelease(release)
+        }
+    }
+
+    fun downloadLatestGitHubReleaseUpdate(repo: String, githubToken: String = "") {
+        val cleanRepo = repo.trim()
+        if (cleanRepo.isBlank()) {
+            _appUpdateState.value = _appUpdateState.value.copy(
+                errorText = "Configure o repositório GitHub (usuario/repositorio) primeiro."
+            )
+            return
+        }
+        appUpdateJob?.cancel()
+        appUpdateJob = viewModelScope.launch {
+            _appUpdateState.value = AppUpdateUiState(
+                isResolving = true,
+                statusText = "Buscando última Release com APK no GitHub..."
+            )
+            val resolved = appUpdateManager.resolveLatestGitHubApkRelease(cleanRepo, githubToken)
+            val release = resolved.getOrElse { err ->
+                _appUpdateState.value = AppUpdateUiState(
+                    errorText = err.localizedMessage ?: "Nenhuma Release com APK encontrada."
+                )
+                return@launch
+            }
+            downloadAndLaunchRelease(release)
+        }
+    }
+
+    private suspend fun downloadAndLaunchRelease(release: AppUpdateReleaseInfo) {
+        _appUpdateState.value = AppUpdateUiState(
+            isDownloading = true,
+            resolvedRelease = release,
+            statusText = "Baixando ${release.fileName}..."
+        )
+        val downloadResult = appUpdateManager.downloadAndVerifyApk(release) { progress ->
+            _appUpdateState.value = _appUpdateState.value.copy(
+                isResolving = false,
+                isDownloading = true,
+                downloadFraction = progress.fraction,
+                downloadedBytes = progress.downloadedBytes,
+                totalBytes = progress.totalBytes
+            )
+        }
+        downloadResult.onSuccess { verified ->
+            _appUpdateState.value = _appUpdateState.value.copy(
+                isResolving = false,
+                isDownloading = false,
+                downloadFraction = 1f,
+                verifiedApk = verified,
+                statusText = "APK validado (${verified.versionName ?: "nova versão"})! Abrindo instalador...",
+                errorText = null
+            )
+            installDownloadedUpdate()
+        }.onFailure { err ->
+            _appUpdateState.value = AppUpdateUiState(
+                resolvedRelease = release,
+                errorText = err.localizedMessage ?: "Erro ao baixar ou validar o arquivo APK."
+            )
+        }
+    }
+
+    fun installDownloadedUpdate() {
+        val verified = _appUpdateState.value.verifiedApk ?: run {
+            _appUpdateState.value = _appUpdateState.value.copy(
+                errorText = "Nenhum APK baixado para instalar."
+            )
+            return
+        }
+        when (val launch = appUpdateManager.launchApkInstaller(verified.file)) {
+            ApkInstallLaunchResult.Launched -> {
+                _appUpdateState.value = _appUpdateState.value.copy(
+                    needsInstallPermissionDialog = false,
+                    awaitingInstallPermission = false,
+                    statusText = "Instalador do Android aberto! Confirme a atualização para continuar.",
+                    errorText = null
+                )
+            }
+            ApkInstallLaunchResult.NeedsInstallPermission -> {
+                _appUpdateState.value = _appUpdateState.value.copy(
+                    needsInstallPermissionDialog = true,
+                    awaitingInstallPermission = true,
+                    statusText = "Autorize \"Instalar apps desconhecidos\" para concluir a atualização.",
+                    errorText = null
+                )
+            }
+            is ApkInstallLaunchResult.Error -> {
+                _appUpdateState.value = _appUpdateState.value.copy(
+                    needsInstallPermissionDialog = false,
+                    awaitingInstallPermission = false,
+                    errorText = launch.message
+                )
+            }
+        }
+    }
+
+    fun onResumeAfterInstallSettings() {
+        val current = _appUpdateState.value
+        if (current.awaitingInstallPermission &&
+            current.verifiedApk != null &&
+            appUpdateManager.canRequestPackageInstalls()
+        ) {
+            installDownloadedUpdate()
+        }
+    }
+
+    fun dismissUpdateInstallPermissionDialog() {
+        _appUpdateState.value = _appUpdateState.value.copy(
+            needsInstallPermissionDialog = false
+        )
+    }
+
+    fun buildManageUnknownAppSourcesIntent() = appUpdateManager.buildManageUnknownAppSourcesIntent()
 
     fun clearStatusMessage() {
         _statusMessage.value = null
