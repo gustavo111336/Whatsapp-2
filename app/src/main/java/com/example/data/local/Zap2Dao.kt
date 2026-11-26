@@ -61,6 +61,36 @@ interface Zap2Dao {
     @Query("DELETE FROM local_contacts")
     suspend fun clearContacts()
 
+    @Query("SELECT * FROM saved_stickers_gifs ORDER BY createdAtMs DESC")
+    fun observeSavedStickersAndGifs(): Flow<List<SavedStickerGifEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertSavedStickerGif(item: SavedStickerGifEntity)
+
+    @Query("DELETE FROM saved_stickers_gifs WHERE id = :id")
+    suspend fun deleteSavedStickerGifById(id: String)
+
+    @Query("SELECT * FROM scheduled_messages WHERE chatId = :chatId AND status != 'SENT' ORDER BY scheduledAtMs ASC")
+    fun observePendingScheduledForChat(chatId: String): Flow<List<ScheduledMessageEntity>>
+
+    @Query("SELECT * FROM scheduled_messages WHERE status = 'PENDING' ORDER BY scheduledAtMs ASC")
+    suspend fun getAllPendingScheduledOnce(): List<ScheduledMessageEntity>
+
+    @Query("SELECT * FROM scheduled_messages WHERE status = 'PENDING' AND scheduledAtMs <= :nowMs ORDER BY scheduledAtMs ASC")
+    suspend fun getDueScheduledMessages(nowMs: Long): List<ScheduledMessageEntity>
+
+    @Query("SELECT * FROM scheduled_messages WHERE id = :id LIMIT 1")
+    suspend fun getScheduledMessageById(id: String): ScheduledMessageEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertScheduledMessage(msg: ScheduledMessageEntity)
+
+    @Query("UPDATE scheduled_messages SET status = :status, errorMessage = :error WHERE id = :id")
+    suspend fun updateScheduledStatus(id: String, status: String, error: String? = null)
+
+    @Query("DELETE FROM scheduled_messages WHERE id = :id")
+    suspend fun deleteScheduledMessageById(id: String)
+
     @RawQuery
     suspend fun checkpoint(query: SupportSQLiteQuery): Int
 }

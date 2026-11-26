@@ -141,6 +141,11 @@ fun Zap2AppRoot(
                     } catch (e: Exception) {
                         Log.d("Zap2FCM", "FCM token unavailable: ${e.message}")
                     }
+                    com.example.service.ScheduledMessageScheduler.rescheduleAllPending(context)
+                    while (true) {
+                        com.example.service.ScheduledMessageScheduler.dispatchDueMessages(context)
+                        kotlinx.coroutines.delay(20_000L)
+                    }
                 }
 
                 Zap2AuthenticatedShell(

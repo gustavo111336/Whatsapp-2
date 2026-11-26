@@ -45,6 +45,8 @@ import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Android
 import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.BookmarkAdd
+import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
@@ -55,20 +57,26 @@ import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.DoneAll
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.FolderZip
+import androidx.compose.material.icons.rounded.GifBox
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.PictureAsPdf
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Videocam
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -113,6 +121,7 @@ import com.example.data.model.ChatMessage
 import com.example.data.model.UiState
 import com.example.data.model.ZipExtractionResult
 import com.example.data.remote.FreeMediaStorageManager
+import com.example.service.ScheduledMessageTimeUtils
 import com.example.service.ZipArchiveHelper
 import com.example.ui.aichat.AiConfigDialog
 import com.example.ui.components.TypingDotsAnimated
@@ -151,6 +160,10 @@ fun ChatDetailScreen(
     val isLoadingSuggestions by viewModel.isLoadingSuggestions.collectAsStateWithLifecycle()
     val showAiConfigPrompt by viewModel.showAiConfigPrompt.collectAsStateWithLifecycle()
     val userSettings by viewModel.userSettings.collectAsStateWithLifecycle()
+    val viewOnceMode by viewModel.viewOnceMode.collectAsStateWithLifecycle()
+    val toastMessage by viewModel.toastMessage.collectAsStateWithLifecycle()
+    val savedStickersAndGifs by viewModel.savedStickersAndGifs.collectAsStateWithLifecycle()
+    val scheduledMessages by viewModel.scheduledMessages.collectAsStateWithLifecycle()
 
     val isRecording by viewModel.audioPlayer.isRecording.collectAsStateWithLifecycle()
     val recordingDurationMs by viewModel.audioPlayer.recordingDurationMs.collectAsStateWithLifecycle()
@@ -170,6 +183,20 @@ fun ChatDetailScreen(
     var zipPromptStep by remember { mutableStateOf(ZipPromptStep.INITIAL) }
     var pendingZipForCustomTree by remember { mutableStateOf<Pair<File, String>?>(null) }
     var zipExtractionDoneResult by remember { mutableStateOf<ZipExtractionResult?>(null) }
+    var showGifsAndStickersTray by remember { mutableStateOf(false) }
+    var showStickerCreator by remember { mutableStateOf(false) }
+    var showGifWithAudioCreator by remember { mutableStateOf(false) }
+    var showScheduleDialog by remember { mutableStateOf(false) }
+    var showScheduledListDialog by remember { mutableStateOf(false) }
+    var activeViewOnceMessage by remember { mutableStateOf<ChatMessage?>(null) }
+
+    LaunchedEffect(toastMessage) {
+        val msg = toastMessage
+        if (!msg.isNullOrBlank()) {
+            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+            viewModel.clearToastMessage()
+        }
+    }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -489,6 +516,94 @@ fun ChatDetailScreen(
                     )
                 }
 
+                if (scheduledMessages.isNotEmpty() && !isRecording) {
+                    val nextSched = scheduledMessages.first()
+                    Surface(
+                        onClick = { showScheduledListDialog = true },
+                        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.72f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("scheduled_messages_banner")
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                Icons.Rounded.Schedule,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "${scheduledMessages.size} agendada(s) • Próxima: ${ScheduledMessageTimeUtils.formatScheduledDateTime(nextSched.scheduledAtMs)}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                text = "Ver",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+
+                if (viewOnceMode && !isRecording && activeEdit == null) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.75f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("view_once_active_banner")
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                Icons.Rounded.Lock,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "Modo 1x ativo: texto, áudio, vídeo, foto ou GIF será de visualização única",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                text = "Desativar",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.clickable { viewModel.toggleViewOnceMode() }
+                            )
+                        }
+                    }
+                }
+
+                if (!isRecording && activeEdit == null) {
+                    QuickExtrasBar(
+                        viewOnceEnabled = viewOnceMode,
+                        onOpenGifsAndStickers = { showGifsAndStickersTray = true },
+                        onOpenStickerCreator = { showStickerCreator = true },
+                        onOpenGifWithAudio = { showGifWithAudioCreator = true },
+                        onToggleViewOnce = viewModel::toggleViewOnceMode,
+                        onOpenSchedule = { showScheduleDialog = true }
+                    )
+                }
+
                 if (isRecording) {
                     VoiceRecordingBar(
                         durationMs = recordingDurationMs,
@@ -506,6 +621,7 @@ fun ChatDetailScreen(
                         text = draftText,
                         isEditing = activeEdit != null,
                         isLoadingAi = isLoadingSuggestions,
+                        viewOnceEnabled = viewOnceMode,
                         onTextChange = viewModel::onDraftChanged,
                         onSuggestReply = viewModel::requestAiReplySuggestions,
                         onPickImage = {
@@ -518,6 +634,10 @@ fun ChatDetailScreen(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
                             )
                         },
+                        onOpenGifsAndStickers = { showGifsAndStickersTray = true },
+                        onOpenStickerCreator = { showStickerCreator = true },
+                        onOpenGifWithAudio = { showGifWithAudioCreator = true },
+                        onOpenSchedule = { showScheduleDialog = true },
                         onPickPdf = {
                             documentPickerLauncher.launch(arrayOf("application/pdf"))
                         },
@@ -604,6 +724,7 @@ fun ChatDetailScreen(
 
                                 MessageBubbleRow(
                                     message = msg,
+                                    currentUserId = viewModel.currentUserId,
                                     isMine = msg.senderId == viewModel.currentUserId,
                                     isGroup = isGroup,
                                     isFirstInGroup = isFirstInGroup,
@@ -612,19 +733,36 @@ fun ChatDetailScreen(
                                     audioProgress = if (playingMessageId == msg.id) playbackProgress else 0f,
                                     downloadProgress = fileDownloadProgress[msg.id],
                                     onToggleAudio = {
-                                        val localPath = msg.localMediaPath?.takeIf { File(it).exists() }
-                                        val remoteUrl = msg.mediaUrl
-                                        if (localPath != null) {
-                                            viewModel.audioPlayer.togglePlayback(msg.id, localPath)
-                                        } else if (!remoteUrl.isNullOrBlank()) {
-                                            if (FreeMediaStorageManager.isChunkUri(remoteUrl) || remoteUrl.contains("github")) {
-                                                viewModel.downloadAndPrepareFile(msg) { downloaded ->
+                                        if (msg.messageType == "GIF_AUDIO") {
+                                            val localAud = msg.localAudioPath?.takeIf { File(it).exists() }
+                                            if (localAud != null) {
+                                                viewModel.audioPlayer.togglePlayback(msg.id, localAud)
+                                            } else {
+                                                viewModel.prepareAudioForMessage(msg) { downloaded ->
                                                     viewModel.audioPlayer.togglePlayback(msg.id, downloaded.absolutePath)
                                                 }
-                                            } else {
-                                                viewModel.audioPlayer.togglePlayback(msg.id, remoteUrl)
+                                            }
+                                        } else {
+                                            val localPath = msg.localMediaPath?.takeIf { File(it).exists() }
+                                            val remoteUrl = msg.mediaUrl
+                                            if (localPath != null) {
+                                                viewModel.audioPlayer.togglePlayback(msg.id, localPath)
+                                            } else if (!remoteUrl.isNullOrBlank()) {
+                                                if (FreeMediaStorageManager.isChunkUri(remoteUrl) || remoteUrl.contains("github")) {
+                                                    viewModel.downloadAndPrepareFile(msg) { downloaded ->
+                                                        viewModel.audioPlayer.togglePlayback(msg.id, downloaded.absolutePath)
+                                                    }
+                                                } else {
+                                                    viewModel.audioPlayer.togglePlayback(msg.id, remoteUrl)
+                                                }
                                             }
                                         }
+                                    },
+                                    onOpenViewOnce = { clicked ->
+                                        activeViewOnceMessage = clicked
+                                    },
+                                    onSaveGifOrSticker = { clicked ->
+                                        viewModel.saveMessageMedia(clicked)
                                     },
                                     onPlayVideo = { file -> activeVideoFile = file },
                                     onOpenFilePrimary = { clickedMsg ->
@@ -729,6 +867,10 @@ fun ChatDetailScreen(
                 clipboardManager.setText(AnnotatedString(actionMsg.text))
                 selectedMessageForActions = null
                 Toast.makeText(context, "Mensagem copiada", Toast.LENGTH_SHORT).show()
+            },
+            onSaveMedia = {
+                selectedMessageForActions = null
+                viewModel.saveMessageMedia(actionMsg)
             },
             onEdit = {
                 selectedMessageForActions = null
@@ -873,6 +1015,78 @@ fun ChatDetailScreen(
             currentSettings = userSettings,
             onDismiss = viewModel::dismissAiConfigPrompt,
             onSave = viewModel::saveQuickAiConfig
+        )
+    }
+
+    if (showGifsAndStickersTray) {
+        GifAndStickersTrayDialog(
+            savedItems = savedStickersAndGifs,
+            viewOnceMode = viewOnceMode,
+            onDismiss = { showGifsAndStickersTray = false },
+            onOpenStickerCreator = { showStickerCreator = true },
+            onPickGifFromGallery = {
+                photoPickerLauncher.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                )
+            },
+            onOpenGifWithAudioCreator = { showGifWithAudioCreator = true },
+            onSendSavedItem = viewModel::sendSavedStickerOrGif,
+            onDeleteSavedItem = viewModel::deleteSavedItem
+        )
+    }
+
+    if (showStickerCreator) {
+        StickerCreatorDialog(
+            onDismiss = { showStickerCreator = false },
+            onSaveOnly = viewModel::saveCustomStickerOnly,
+            onSendSticker = viewModel::sendCustomSticker
+        )
+    }
+
+    if (showGifWithAudioCreator) {
+        GifWithAudioCreatorDialog(
+            audioPlayer = viewModel.audioPlayer,
+            savedGifs = savedStickersAndGifs,
+            onDismiss = { showGifWithAudioCreator = false },
+            onSendGifWithAudio = viewModel::sendGifWithAudio
+        )
+    }
+
+    if (showScheduleDialog) {
+        ScheduleMessageDialog(
+            initialText = draftText,
+            initialViewOnce = viewOnceMode,
+            savedItems = savedStickersAndGifs,
+            onDismiss = { showScheduleDialog = false },
+            onConfirmSchedule = { scheduledAtMs, msgType, text, savedItem, vOnce ->
+                viewModel.scheduleMessage(
+                    context = context,
+                    scheduledAtMs = scheduledAtMs,
+                    messageType = msgType,
+                    text = text,
+                    savedItem = savedItem,
+                    viewOnce = vOnce
+                )
+            }
+        )
+    }
+
+    if (showScheduledListDialog) {
+        ScheduledMessagesListDialog(
+            scheduled = scheduledMessages,
+            onDismiss = { showScheduledListDialog = false },
+            onSendNow = { id -> viewModel.sendScheduledMessageNow(context, id) },
+            onCancel = { id -> viewModel.cancelScheduledMessage(context, id) }
+        )
+    }
+
+    val viewOnceMsg = activeViewOnceMessage
+    if (viewOnceMsg != null) {
+        ViewOnceViewerDialog(
+            message = viewOnceMsg,
+            onPrepareContent = viewModel::prepareViewOnceContent,
+            onOpenedAndConsumed = viewModel::markViewOnceOpened,
+            onDismiss = { activeViewOnceMessage = null }
         )
     }
 }
@@ -1087,15 +1301,18 @@ private fun MessageActionsDialog(
     isMine: Boolean,
     onDismiss: () -> Unit,
     onCopy: () -> Unit,
+    onSaveMedia: () -> Unit,
     onEdit: () -> Unit,
     onRequestDelete: () -> Unit
 ) {
+    val canSaveGifOrSticker = !message.viewOnce &&
+        message.messageType in setOf("GIF", "STICKER", "GIF_AUDIO")
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Opções da mensagem") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (message.text.isNotBlank()) {
+                if (message.text.isNotBlank() && !message.viewOnce) {
                     Text(
                         text = message.text,
                         style = MaterialTheme.typography.bodySmall,
@@ -1123,7 +1340,27 @@ private fun MessageActionsDialog(
                     }
                 }
 
-                if (isMine && message.messageType == "TEXT") {
+                if (canSaveGifOrSticker) {
+                    Surface(
+                        onClick = onSaveMedia,
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("action_save_gif_sticker")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(Icons.Rounded.BookmarkAdd, contentDescription = null)
+                            Text("Salvar na coleção e Galeria", style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+                }
+
+                if (isMine && message.messageType == "TEXT" && !message.viewOnce) {
                     Surface(
                         onClick = onEdit,
                         shape = RoundedCornerShape(12.dp),
@@ -1253,6 +1490,7 @@ private fun DeleteMessageConfirmDialog(
 @Composable
 private fun MessageBubbleRow(
     message: ChatMessage,
+    currentUserId: String,
     isMine: Boolean,
     isGroup: Boolean,
     isFirstInGroup: Boolean,
@@ -1261,6 +1499,8 @@ private fun MessageBubbleRow(
     audioProgress: Float,
     downloadProgress: Float?,
     onToggleAudio: () -> Unit,
+    onOpenViewOnce: (ChatMessage) -> Unit,
+    onSaveGifOrSticker: (ChatMessage) -> Unit,
     onPlayVideo: (File) -> Unit,
     onOpenFilePrimary: (ChatMessage) -> Unit,
     onOpenFileExternal: (ChatMessage) -> Unit,
@@ -1296,23 +1536,24 @@ private fun MessageBubbleRow(
         else -> Zap2ExpressiveShapes.IncomingBubbleGrouped
     }
 
-    val bubbleColor = if (isMine) {
-        MaterialTheme.colorScheme.primaryContainer
-    } else {
-        MaterialTheme.colorScheme.surfaceContainerHigh
+    val isStickerBubble = message.messageType == "STICKER" && !message.viewOnce
+    val bubbleColor = when {
+        isStickerBubble -> Color.Transparent
+        isMine -> MaterialTheme.colorScheme.primaryContainer
+        else -> MaterialTheme.colorScheme.surfaceContainerHigh
     }
-    val textColor = if (isMine) {
-        MaterialTheme.colorScheme.onPrimaryContainer
-    } else {
-        MaterialTheme.colorScheme.onSurface
+    val textColor = when {
+        isStickerBubble -> MaterialTheme.colorScheme.onSurface
+        isMine -> MaterialTheme.colorScheme.onPrimaryContainer
+        else -> MaterialTheme.colorScheme.onSurface
     }
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val linkBlue = if (isDark) Color(0xFF64B5F6) else Color(0xFF1565C0)
-    val ytInfo = remember(message.id, message.text) {
-        if (message.text.isNotBlank()) extractFirstYouTubeInfo(message.text) else null
+    val ytInfo = remember(message.id, message.text, message.viewOnce) {
+        if (!message.viewOnce && message.text.isNotBlank()) extractFirstYouTubeInfo(message.text) else null
     }
-    val annotatedBody = remember(message.id, message.text, linkBlue) {
-        if (message.text.isNotBlank()) buildMessageAnnotatedText(message.text, linkBlue) else null
+    val annotatedBody = remember(message.id, message.text, linkBlue, message.viewOnce) {
+        if (!message.viewOnce && message.text.isNotBlank()) buildMessageAnnotatedText(message.text, linkBlue) else null
     }
 
     Row(
@@ -1337,7 +1578,7 @@ private fun MessageBubbleRow(
         Surface(
             shape = bubbleShape,
             color = bubbleColor,
-            tonalElevation = if (isMine) 0.dp else 1.dp,
+            tonalElevation = if (isMine || isStickerBubble) 0.dp else 1.dp,
             modifier = Modifier
                 .widthIn(min = 84.dp, max = 300.dp)
                 .clip(bubbleShape)
@@ -1359,124 +1600,409 @@ private fun MessageBubbleRow(
                     )
                 }
 
-                when (message.messageType) {
-                    "IMAGE" -> {
-                        val context = LocalContext.current
-                        val model by produceState<Any?>(
-                            initialValue = null,
-                            key1 = message.id,
-                            key2 = message.localMediaPath,
-                            key3 = message.mediaUrl
+                if (message.viewOnce) {
+                    val alreadyOpenedByMe = currentUserId in message.viewedBy
+                    val openedByPeer = message.viewedBy.any { it != message.senderId }
+                    val kindLabel = when (message.messageType) {
+                        "AUDIO" -> "Áudio"
+                        "VIDEO" -> "Vídeo"
+                        "GIF" -> "GIF"
+                        "STICKER" -> "Fig"
+                        "GIF_AUDIO" -> "GIF com áudio"
+                        "IMAGE" -> "Foto"
+                        else -> "Mensagem"
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(
+                                if (!isMine && !alreadyOpenedByMe) {
+                                    Modifier
+                                        .clickable { onOpenViewOnce(message) }
+                                        .testTag("view_once_open_card_${message.id}")
+                                } else {
+                                    Modifier
+                                }
+                            )
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            val localFile = message.localMediaPath?.let(::File)?.takeIf { it.exists() }
-                            val remoteUrl = message.mediaUrl
-                            value = when {
-                                localFile != null -> localFile
-                                remoteUrl?.startsWith("data:image/") == true -> {
-                                    val b64 = remoteUrl.substringAfter(",", "")
-                                    runCatching { Base64.decode(b64, Base64.DEFAULT) }.getOrNull()
-                                }
-                                FreeMediaStorageManager.requiresManagedResolution(remoteUrl) -> {
-                                    FreeMediaStorageManager.resolveMediaModel(context, remoteUrl)
-                                }
-                                else -> remoteUrl
+                            Icon(
+                                imageVector = if ((!isMine && alreadyOpenedByMe) || (isMine && openedByPeer)) {
+                                    Icons.Rounded.VisibilityOff
+                                } else {
+                                    Icons.Rounded.Lock
+                                },
+                                contentDescription = "Visualização única",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = when {
+                                        !isMine && alreadyOpenedByMe -> "$kindLabel de visualização única aberta"
+                                        !isMine -> "$kindLabel (1x) • Toque para abrir"
+                                        openedByPeer -> "$kindLabel (1x) • Aberta"
+                                        else -> "$kindLabel de visualização única"
+                                    },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = textColor
+                                )
+                                Text(
+                                    text = if (!isMine && !alreadyOpenedByMe) {
+                                        "Desaparece após visualizar"
+                                    } else {
+                                        "Modo visualização única (1x)"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = textColor.copy(alpha = 0.7f)
+                                )
                             }
                         }
-                        if (model != null) {
-                            AsyncImage(
-                                model = model,
-                                contentDescription = "Imagem enviada",
-                                contentScale = ContentScale.Crop,
+                    }
+                } else {
+                    when (message.messageType) {
+                        "IMAGE", "GIF" -> {
+                            val context = LocalContext.current
+                            val model by produceState<Any?>(
+                                initialValue = null,
+                                key1 = message.id,
+                                key2 = message.localMediaPath,
+                                key3 = message.mediaUrl
+                            ) {
+                                val localFile = message.localMediaPath?.let(::File)?.takeIf { it.exists() }
+                                val remoteUrl = message.mediaUrl
+                                value = when {
+                                    localFile != null -> localFile
+                                    remoteUrl?.startsWith("data:image/") == true -> {
+                                        val b64 = remoteUrl.substringAfter(",", "")
+                                        runCatching { Base64.decode(b64, Base64.DEFAULT) }.getOrNull()
+                                    }
+                                    FreeMediaStorageManager.requiresManagedResolution(remoteUrl) -> {
+                                        FreeMediaStorageManager.resolveMediaModel(context, remoteUrl)
+                                    }
+                                    else -> remoteUrl
+                                }
+                            }
+                            if (model != null) {
+                                Box {
+                                    AsyncImage(
+                                        model = model,
+                                        contentDescription = if (message.messageType == "GIF") "GIF animado" else "Imagem enviada",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(200.dp)
+                                            .clip(RoundedCornerShape(16.dp))
+                                    )
+                                    if (message.messageType == "GIF") {
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = Color.Black.copy(alpha = 0.65f),
+                                            modifier = Modifier
+                                                .align(Alignment.TopStart)
+                                                .padding(8.dp)
+                                        ) {
+                                            Text(
+                                                text = "GIF",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color.White,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                        Surface(
+                                            onClick = { onSaveGifOrSticker(message) },
+                                            shape = RoundedCornerShape(10.dp),
+                                            color = Color.Black.copy(alpha = 0.65f),
+                                            modifier = Modifier
+                                                .align(Alignment.BottomEnd)
+                                                .padding(8.dp)
+                                                .testTag("save_gif_button_${message.id}")
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Icon(
+                                                    Icons.Rounded.BookmarkAdd,
+                                                    contentDescription = "Salvar GIF",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                                Text(
+                                                    text = "Salvar GIF",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = Color.White
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if (annotatedBody != null) {
+                                Text(
+                                    text = annotatedBody,
+                                    style = MaterialTheme.typography.bodyLarge.copy(color = textColor)
+                                )
+                            }
+                        }
+                        "STICKER" -> {
+                            val context = LocalContext.current
+                            val model by produceState<Any?>(
+                                initialValue = null,
+                                key1 = message.id,
+                                key2 = message.localMediaPath,
+                                key3 = message.mediaUrl
+                            ) {
+                                val localFile = message.localMediaPath?.let(::File)?.takeIf { it.exists() }
+                                val remoteUrl = message.mediaUrl
+                                value = when {
+                                    localFile != null -> localFile
+                                    FreeMediaStorageManager.requiresManagedResolution(remoteUrl) -> {
+                                        FreeMediaStorageManager.resolveMediaModel(context, remoteUrl)
+                                    }
+                                    else -> remoteUrl
+                                }
+                            }
+                            Column(
+                                horizontalAlignment = if (isMine) Alignment.End else Alignment.Start,
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                if (model != null) {
+                                    AsyncImage(
+                                        model = model,
+                                        contentDescription = "Fig enviada",
+                                        contentScale = ContentScale.Fit,
+                                        modifier = Modifier
+                                            .size(168.dp)
+                                            .clip(RoundedCornerShape(18.dp))
+                                    )
+                                }
+                                Surface(
+                                    onClick = { onSaveGifOrSticker(message) },
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                    modifier = Modifier.testTag("save_sticker_button_${message.id}")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Rounded.BookmarkAdd,
+                                            contentDescription = "Salvar Fig",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Text(
+                                            text = "Salvar Fig",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        "GIF_AUDIO" -> {
+                            val context = LocalContext.current
+                            val model by produceState<Any?>(
+                                initialValue = null,
+                                key1 = message.id,
+                                key2 = message.localMediaPath,
+                                key3 = message.mediaUrl
+                            ) {
+                                val localFile = message.localMediaPath?.let(::File)?.takeIf { it.exists() }
+                                val remoteUrl = message.mediaUrl
+                                value = when {
+                                    localFile != null -> localFile
+                                    FreeMediaStorageManager.requiresManagedResolution(remoteUrl) -> {
+                                        FreeMediaStorageManager.resolveMediaModel(context, remoteUrl)
+                                    }
+                                    else -> remoteUrl
+                                }
+                            }
+                            if (model != null) {
+                                Box {
+                                    AsyncImage(
+                                        model = model,
+                                        contentDescription = "GIF com áudio",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(190.dp)
+                                            .clip(RoundedCornerShape(16.dp))
+                                    )
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = Color.Black.copy(alpha = 0.65f),
+                                        modifier = Modifier
+                                            .align(Alignment.TopStart)
+                                            .padding(8.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Rounded.MusicNote,
+                                                contentDescription = null,
+                                                tint = Color.White,
+                                                modifier = Modifier.size(12.dp)
+                                            )
+                                            Text(
+                                                text = "GIF + Áudio",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color.White
+                                            )
+                                        }
+                                    }
+                                    Surface(
+                                        onClick = { onSaveGifOrSticker(message) },
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = Color.Black.copy(alpha = 0.65f),
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .padding(8.dp)
+                                            .testTag("save_gif_audio_button_${message.id}")
+                                    ) {
+                                        Icon(
+                                            Icons.Rounded.BookmarkAdd,
+                                            contentDescription = "Salvar GIF com Áudio",
+                                            tint = Color.White,
+                                            modifier = Modifier
+                                                .padding(6.dp)
+                                                .size(16.dp)
+                                        )
+                                    }
+                                }
+                            }
+                            val seconds = ((message.mediaDurationMs ?: 0L) / 1000L).coerceAtLeast(1L)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(200.dp)
-                                    .clip(RoundedCornerShape(16.dp))
-                            )
-                        }
-                        if (annotatedBody != null) {
-                            Text(
-                                text = annotatedBody,
-                                style = MaterialTheme.typography.bodyLarge.copy(color = textColor)
-                            )
-                        }
-                    }
-                    "VIDEO" -> {
-                        VideoMessageBubbleContent(
-                            message = message,
-                            onPlayVideo = onPlayVideo
-                        )
-                        if (annotatedBody != null) {
-                            Text(
-                                text = annotatedBody,
-                                style = MaterialTheme.typography.bodyLarge.copy(color = textColor)
-                            )
-                        }
-                    }
-                    "AUDIO" -> {
-                        val seconds = ((message.mediaDurationMs ?: 0L) / 1000L).coerceAtLeast(1L)
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp)
-                        ) {
-                            Surface(
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .clickable(onClick = onToggleAudio)
+                                    .padding(top = 4.dp)
                             ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = if (isPlayingAudio) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                                        contentDescription = if (isPlayingAudio) "Pausar áudio" else "Reproduzir áudio",
-                                        tint = MaterialTheme.colorScheme.onPrimary
+                                Surface(
+                                    shape = CircleShape,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clickable(onClick = onToggleAudio)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = if (isPlayingAudio) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                            contentDescription = if (isPlayingAudio) "Pausar áudio" else "Tocar áudio do GIF",
+                                            tint = MaterialTheme.colorScheme.onPrimary
+                                        )
+                                    }
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    LinearProgressIndicator(
+                                        progress = { if (isPlayingAudio) audioProgress else 0f },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(6.dp)
+                                            .clip(CircleShape)
+                                    )
+                                    Text(
+                                        text = "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = textColor.copy(alpha = 0.75f)
                                     )
                                 }
                             }
-                            Column(modifier = Modifier.weight(1f)) {
-                                LinearProgressIndicator(
-                                    progress = { if (isPlayingAudio) audioProgress else 0f },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(6.dp)
-                                        .clip(CircleShape)
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
+                        }
+                        "VIDEO" -> {
+                            VideoMessageBubbleContent(
+                                message = message,
+                                onPlayVideo = onPlayVideo
+                            )
+                            if (annotatedBody != null) {
                                 Text(
-                                    text = "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = textColor.copy(alpha = 0.75f)
+                                    text = annotatedBody,
+                                    style = MaterialTheme.typography.bodyLarge.copy(color = textColor)
                                 )
                             }
                         }
-                    }
-                    "PDF", "APK", "ZIP", "FILE" -> {
-                        FileAttachmentMessageCard(
-                            message = message,
-                            downloadProgress = downloadProgress,
-                            onPrimaryAction = { onOpenFilePrimary(message) },
-                            onSecondaryAction = if (message.messageType == "PDF") {
-                                { onOpenFileExternal(message) }
-                            } else {
-                                null
+                        "AUDIO" -> {
+                            val seconds = ((message.mediaDurationMs ?: 0L) / 1000L).coerceAtLeast(1L)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp)
+                            ) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .clickable(onClick = onToggleAudio)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = if (isPlayingAudio) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                            contentDescription = if (isPlayingAudio) "Pausar áudio" else "Reproduzir áudio",
+                                            tint = MaterialTheme.colorScheme.onPrimary
+                                        )
+                                    }
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    LinearProgressIndicator(
+                                        progress = { if (isPlayingAudio) audioProgress else 0f },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(6.dp)
+                                            .clip(CircleShape)
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = textColor.copy(alpha = 0.75f)
+                                    )
+                                }
                             }
-                        )
-                        if (annotatedBody != null) {
-                            Text(
-                                text = annotatedBody,
-                                style = MaterialTheme.typography.bodyLarge.copy(color = textColor)
-                            )
                         }
-                    }
-                    else -> {
-                        if (annotatedBody != null) {
-                            Text(
-                                text = annotatedBody,
-                                style = MaterialTheme.typography.bodyLarge.copy(color = textColor)
+                        "PDF", "APK", "ZIP", "FILE" -> {
+                            FileAttachmentMessageCard(
+                                message = message,
+                                downloadProgress = downloadProgress,
+                                onPrimaryAction = { onOpenFilePrimary(message) },
+                                onSecondaryAction = if (message.messageType == "PDF") {
+                                    { onOpenFileExternal(message) }
+                                } else {
+                                    null
+                                }
                             )
+                            if (annotatedBody != null) {
+                                Text(
+                                    text = annotatedBody,
+                                    style = MaterialTheme.typography.bodyLarge.copy(color = textColor)
+                                )
+                            }
+                        }
+                        else -> {
+                            if (annotatedBody != null) {
+                                Text(
+                                    text = annotatedBody,
+                                    style = MaterialTheme.typography.bodyLarge.copy(color = textColor)
+                                )
+                            }
                         }
                     }
                 }
@@ -1522,14 +2048,80 @@ private fun MessageBubbleRow(
 }
 
 @Composable
+private fun QuickExtrasBar(
+    viewOnceEnabled: Boolean,
+    onOpenGifsAndStickers: () -> Unit,
+    onOpenStickerCreator: () -> Unit,
+    onOpenGifWithAudio: () -> Unit,
+    onToggleViewOnce: () -> Unit,
+    onOpenSchedule: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 10.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        FilterChip(
+            selected = viewOnceEnabled,
+            onClick = onToggleViewOnce,
+            leadingIcon = {
+                Icon(Icons.Rounded.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
+            },
+            label = { Text("1x Única") },
+            modifier = Modifier.testTag("view_once_toggle_button")
+        )
+        AssistChip(
+            onClick = onOpenGifsAndStickers,
+            leadingIcon = {
+                Icon(Icons.Rounded.GifBox, contentDescription = null, modifier = Modifier.size(16.dp))
+            },
+            label = { Text("Figs & GIFs") },
+            modifier = Modifier.testTag("open_gifs_figs_button")
+        )
+        AssistChip(
+            onClick = onOpenStickerCreator,
+            leadingIcon = {
+                Icon(Icons.Rounded.Brush, contentDescription = null, modifier = Modifier.size(16.dp))
+            },
+            label = { Text("Criar Fig") },
+            modifier = Modifier.testTag("open_create_fig_button")
+        )
+        AssistChip(
+            onClick = onOpenGifWithAudio,
+            leadingIcon = {
+                Icon(Icons.Rounded.MusicNote, contentDescription = null, modifier = Modifier.size(16.dp))
+            },
+            label = { Text("GIF+Áudio") },
+            modifier = Modifier.testTag("open_gif_audio_button")
+        )
+        AssistChip(
+            onClick = onOpenSchedule,
+            leadingIcon = {
+                Icon(Icons.Rounded.Schedule, contentDescription = null, modifier = Modifier.size(16.dp))
+            },
+            label = { Text("Agendar") },
+            modifier = Modifier.testTag("schedule_message_button")
+        )
+    }
+}
+
+@Composable
 private fun MessageComposerBar(
     text: String,
     isEditing: Boolean,
     isLoadingAi: Boolean,
+    viewOnceEnabled: Boolean,
     onTextChange: (String) -> Unit,
     onSuggestReply: () -> Unit,
     onPickImage: () -> Unit,
     onPickVideo: () -> Unit,
+    onOpenGifsAndStickers: () -> Unit,
+    onOpenStickerCreator: () -> Unit,
+    onOpenGifWithAudio: () -> Unit,
+    onOpenSchedule: () -> Unit,
     onPickPdf: () -> Unit,
     onPickApk: () -> Unit,
     onPickZip: () -> Unit,
@@ -1571,7 +2163,7 @@ private fun MessageComposerBar(
                         onDismissRequest = { showAttachMenu = false }
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Foto") },
+                            text = { Text("Foto / GIF da Galeria") },
                             leadingIcon = {
                                 Icon(Icons.Rounded.PhotoLibrary, contentDescription = null)
                             },
@@ -1591,6 +2183,46 @@ private fun MessageComposerBar(
                                 onPickVideo()
                             },
                             modifier = Modifier.testTag("pick_video_menu_item")
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Figs e GIFs salvos") },
+                            leadingIcon = {
+                                Icon(Icons.Rounded.GifBox, contentDescription = null)
+                            },
+                            onClick = {
+                                showAttachMenu = false
+                                onOpenGifsAndStickers()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Criar Fig (Sticker)") },
+                            leadingIcon = {
+                                Icon(Icons.Rounded.Brush, contentDescription = null)
+                            },
+                            onClick = {
+                                showAttachMenu = false
+                                onOpenStickerCreator()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Criar GIF com Áudio") },
+                            leadingIcon = {
+                                Icon(Icons.Rounded.MusicNote, contentDescription = null)
+                            },
+                            onClick = {
+                                showAttachMenu = false
+                                onOpenGifWithAudio()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Agendar mensagem") },
+                            leadingIcon = {
+                                Icon(Icons.Rounded.Schedule, contentDescription = null)
+                            },
+                            onClick = {
+                                showAttachMenu = false
+                                onOpenSchedule()
+                            }
                         )
                         DropdownMenuItem(
                             text = { Text("Documento PDF") },
@@ -1641,7 +2273,11 @@ private fun MessageComposerBar(
                 TextField(
                     value = text,
                     onValueChange = onTextChange,
-                    placeholder = { Text(stringResource(R.string.type_message_hint)) },
+                    placeholder = {
+                        Text(
+                            if (viewOnceEnabled) "Mensagem única (1x)…" else stringResource(R.string.type_message_hint)
+                        )
+                    },
                     maxLines = 4,
                     colors = TextFieldDefaults.colors(
                         focusedContainerColor = Color.Transparent,

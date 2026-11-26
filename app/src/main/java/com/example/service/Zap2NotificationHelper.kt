@@ -84,6 +84,9 @@ object Zap2NotificationHelper {
         val raw = chat.lastMessageText.trim()
         return when (chat.lastMessageType) {
             "IMAGE" -> raw.ifBlank { "Enviou uma foto" }
+            "GIF" -> raw.ifBlank { "Enviou um GIF" }
+            "STICKER" -> raw.ifBlank { "Enviou uma fig" }
+            "GIF_AUDIO" -> raw.ifBlank { "Enviou um GIF com áudio" }
             "VIDEO" -> raw.ifBlank { "Enviou um vídeo" }
             "AUDIO" -> raw.ifBlank { "Enviou um áudio" }
             "PDF" -> raw.ifBlank { "Enviou um arquivo PDF" }

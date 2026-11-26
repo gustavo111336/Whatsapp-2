@@ -124,7 +124,7 @@ service cloud.firestore {
              isValidStringList(data.participantUids, 1, 50) &&
              isValidStringList(data.adminUids, 1, 50) &&
              data.lastMessageText is string && data.lastMessageText.size() <= 500 &&
-             data.lastMessageType in ['TEXT', 'IMAGE', 'VIDEO', 'AUDIO', 'PDF', 'APK', 'ZIP', 'FILE', 'SYSTEM'] &&
+             data.lastMessageType in ['TEXT', 'IMAGE', 'GIF', 'STICKER', 'GIF_AUDIO', 'VIDEO', 'AUDIO', 'PDF', 'APK', 'ZIP', 'FILE', 'SYSTEM'] &&
              data.lastMessageSenderId is string && data.lastMessageSenderId.size() <= 128 &&
              isValidTimestamp(data.lastMessageAt) &&
              isValidTimestamp(data.createdAt) &&
@@ -139,7 +139,7 @@ service cloud.firestore {
              data.senderId is string && data.senderId.size() >= 1 && data.senderId.size() <= 128 &&
              data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80 &&
              isValidStringList(data.participantUids, 1, 50) &&
-             data.messageType in ['TEXT', 'IMAGE', 'VIDEO', 'AUDIO', 'PDF', 'APK', 'ZIP', 'FILE', 'SYSTEM'] &&
+             data.messageType in ['TEXT', 'IMAGE', 'GIF', 'STICKER', 'GIF_AUDIO', 'VIDEO', 'AUDIO', 'PDF', 'APK', 'ZIP', 'FILE', 'SYSTEM'] &&
              data.text is string && data.text.size() <= 4000 &&
              isValidTimestamp(data.createdAt) &&
              isValidTimestamp(data.updatedAt) &&
@@ -149,6 +149,12 @@ service cloud.firestore {
              (!('fileName' in data) || (data.fileName is string && data.fileName.size() <= 255)) &&
              (!('fileSizeBytes' in data) || (data.fileSizeBytes is int && data.fileSizeBytes >= 0)) &&
              (!('mimeType' in data) || (data.mimeType is string && data.mimeType.size() <= 128)) &&
+             (!('audioUrl' in data) || (data.audioUrl is string && data.audioUrl.size() <= 800000)) &&
+             (!('audioFileName' in data) || (data.audioFileName is string && data.audioFileName.size() <= 255)) &&
+             (!('audioMimeType' in data) || (data.audioMimeType is string && data.audioMimeType.size() <= 128)) &&
+             (!('localAudioPath' in data) || (data.localAudioPath is string && data.localAudioPath.size() <= 500)) &&
+             (!('viewOnce' in data) || data.viewOnce is bool) &&
+             (!('viewedBy' in data) || isValidStringList(data.viewedBy, 0, 50)) &&
              (!('deliveredTo' in data) || isValidStringList(data.deliveredTo, 0, 50)) &&
              (!('readBy' in data) || isValidStringList(data.readBy, 0, 50)) &&
              (!('edited' in data) || data.edited is bool) &&
@@ -445,7 +451,8 @@ service cloud.firestore {
                            'chatId', 'senderId', 'senderName', 'participantUids',
                            'messageType', 'text', 'mediaUrl', 'localMediaPath',
                            'mediaDurationMs', 'fileName', 'fileSizeBytes', 'mimeType',
-                           'deliveredTo', 'readBy',
+                           'audioUrl', 'audioFileName', 'audioMimeType', 'localAudioPath',
+                           'viewOnce', 'viewedBy', 'deliveredTo', 'readBy',
                            'edited', 'editedAt', 'deletedFor', 'createdAt', 'updatedAt'
                          ]) &&
                          isValidMessage(incoming()) &&
@@ -460,7 +467,8 @@ service cloud.firestore {
                          incoming().messageType == existing().messageType &&
                          incoming().createdAt == existing().createdAt &&
                          isValidMessage(incoming()) && (
-                           incoming().diff(existing()).affectedKeys().hasOnly(['deliveredTo', 'readBy', 'deletedFor', 'updatedAt']) ||
+                           (incoming().diff(existing()).affectedKeys().hasOnly(['deliveredTo', 'readBy', 'viewedBy', 'deletedFor', 'updatedAt']) &&
+                            (!('viewedBy' in existing()) || incoming().get('viewedBy', []).hasAll(existing().viewedBy))) ||
                            (existing().senderId == request.auth.uid &&
                             incoming().diff(existing()).affectedKeys().hasOnly(['text', 'edited', 'editedAt', 'updatedAt']))
                          );

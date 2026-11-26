@@ -621,8 +621,14 @@ private fun ChatListCard(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     when (chat.lastMessageType) {
-                        "IMAGE" -> Icon(
+                        "IMAGE", "GIF", "STICKER" -> Icon(
                             Icons.Rounded.Image,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        "GIF_AUDIO" -> Icon(
+                            Icons.Rounded.Videocam,
                             contentDescription = null,
                             modifier = Modifier.size(16.dp),
                             tint = MaterialTheme.colorScheme.primary

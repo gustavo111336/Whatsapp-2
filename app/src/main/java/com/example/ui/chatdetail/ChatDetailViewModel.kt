@@ -4,6 +4,8 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.local.SavedStickerGifEntity
+import com.example.data.local.ScheduledMessageEntity
 import com.example.data.local.SettingsDataStore
 import com.example.data.local.UserSettings
 import com.example.data.model.ChatMessage
@@ -20,9 +22,11 @@ import com.example.data.remote.UserAndContactsRepository
 import com.example.data.remote.unwrapFirestoreException
 import com.example.service.AiAssistantService
 import com.example.service.AudioRecorderPlayer
+import com.example.service.ScheduledMessageScheduler
+import com.example.service.ScheduledMessageTimeUtils
 import com.example.service.ZipArchiveHelper
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -33,12 +37,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -56,11 +62,17 @@ class ChatDetailViewModel(
     private val _draftText = MutableStateFlow("")
     val draftText: StateFlow<String> = _draftText.asStateFlow()
 
+    private val _viewOnceMode = MutableStateFlow(false)
+    val viewOnceMode: StateFlow<Boolean> = _viewOnceMode.asStateFlow()
+
     private val _isSendingMedia = MutableStateFlow(false)
     val isSendingMedia: StateFlow<Boolean> = _isSendingMedia.asStateFlow()
 
     private val _errorBanner = MutableStateFlow<String?>(null)
     val errorBanner: StateFlow<String?> = _errorBanner.asStateFlow()
+
+    private val _toastMessage = MutableStateFlow<String?>(null)
+    val toastMessage: StateFlow<String?> = _toastMessage.asStateFlow()
 
     private val _editingMessage = MutableStateFlow<ChatMessage?>(null)
     val editingMessage: StateFlow<ChatMessage?> = _editingMessage.asStateFlow()
@@ -85,6 +97,16 @@ class ChatDetailViewModel(
     val defaultZipExtractUri: StateFlow<String> = settingsStore.settingsFlow
         .map { it.defaultZipExtractUri }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), "")
+
+    val savedStickersAndGifs: StateFlow<List<SavedStickerGifEntity>> =
+        chatRepository.observeSavedStickersAndGifs()
+            .catch { emit(emptyList()) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+
+    val scheduledMessages: StateFlow<List<ScheduledMessageEntity>> =
+        chatRepository.observeScheduledMessages(chatId)
+            .catch { emit(emptyList()) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
 
     private var myDisplayName: String = "Você"
     private var typingTimeoutJob: Job? = null
@@ -176,6 +198,14 @@ class ChatDetailViewModel(
         }
     }
 
+    fun toggleViewOnceMode() {
+        _viewOnceMode.value = !_viewOnceMode.value
+    }
+
+    fun clearToastMessage() {
+        _toastMessage.value = null
+    }
+
     fun onDraftChanged(newText: String) {
         _draftText.value = newText
         val room = chatRoom.value ?: return
@@ -212,7 +242,7 @@ class ChatDetailViewModel(
     }
 
     fun startEditingMessage(message: ChatMessage) {
-        if (message.senderId != currentUserId || message.messageType != "TEXT") return
+        if (message.senderId != currentUserId || message.messageType != "TEXT" || message.viewOnce) return
         _editingMessage.value = message
         _draftText.value = message.text
     }
@@ -227,9 +257,11 @@ class ChatDetailViewModel(
         val text = _draftText.value.trim()
         if (text.isEmpty()) return
         val targetEdit = _editingMessage.value
+        val useViewOnce = _viewOnceMode.value && targetEdit == null
         _draftText.value = ""
         _editingMessage.value = null
         _aiSuggestions.value = emptyList()
+        if (useViewOnce) _viewOnceMode.value = false
         clearTypingStatusNow(room)
 
         viewModelScope.launch {
@@ -241,7 +273,7 @@ class ChatDetailViewModel(
                         _errorBanner.value = err.localizedMessage ?: "Falha ao editar mensagem."
                     }
             } else {
-                chatRepository.sendTextMessage(room, myDisplayName, text)
+                chatRepository.sendTextMessage(room, myDisplayName, text, viewOnce = useViewOnce)
                     .onFailure { err ->
                         _errorBanner.value = err.localizedMessage ?: "Falha ao enviar mensagem."
                     }
@@ -278,11 +310,13 @@ class ChatDetailViewModel(
 
     fun sendImage(uri: Uri) {
         val room = chatRoom.value ?: return
+        val useViewOnce = _viewOnceMode.value
+        _viewOnceMode.value = false
         viewModelScope.launch {
             _isSendingMedia.value = true
-            chatRepository.sendImageMessage(room, myDisplayName, uri)
+            chatRepository.sendImageMessage(room, myDisplayName, uri, viewOnce = useViewOnce)
                 .onFailure { err ->
-                    _errorBanner.value = err.localizedMessage ?: "Falha ao enviar imagem."
+                    _errorBanner.value = err.localizedMessage ?: "Falha ao enviar imagem/GIF."
                 }
             _isSendingMedia.value = false
         }
@@ -290,9 +324,11 @@ class ChatDetailViewModel(
 
     fun sendVideo(uri: Uri) {
         val room = chatRoom.value ?: return
+        val useViewOnce = _viewOnceMode.value
+        _viewOnceMode.value = false
         viewModelScope.launch {
             _isSendingMedia.value = true
-            chatRepository.sendVideoMessage(room, myDisplayName, uri)
+            chatRepository.sendVideoMessage(room, myDisplayName, uri, viewOnce = useViewOnce)
                 .onFailure { err ->
                     _errorBanner.value = err.localizedMessage ?: "Falha ao enviar vídeo."
                 }
@@ -302,9 +338,11 @@ class ChatDetailViewModel(
 
     fun sendVoiceNote(file: File, durationMs: Long) {
         val room = chatRoom.value ?: return
+        val useViewOnce = _viewOnceMode.value
+        _viewOnceMode.value = false
         viewModelScope.launch {
             _isSendingMedia.value = true
-            chatRepository.sendAudioMessage(room, myDisplayName, file, durationMs)
+            chatRepository.sendAudioMessage(room, myDisplayName, file, durationMs, viewOnce = useViewOnce)
                 .onFailure { err ->
                     _errorBanner.value = err.localizedMessage ?: "Falha ao enviar áudio."
                 }
@@ -321,6 +359,246 @@ class ChatDetailViewModel(
                     _errorBanner.value = err.localizedMessage ?: "Falha ao enviar arquivo."
                 }
             _isSendingMedia.value = false
+        }
+    }
+
+    fun sendCustomSticker(stickerFile: File, saveToCollection: Boolean, title: String) {
+        val room = chatRoom.value ?: return
+        val useViewOnce = _viewOnceMode.value
+        _viewOnceMode.value = false
+        viewModelScope.launch {
+            _isSendingMedia.value = true
+            if (saveToCollection) {
+                chatRepository.saveCustomStickerToCollection(stickerFile, title = title)
+            }
+            chatRepository.sendStickerMessage(room, myDisplayName, stickerFile, viewOnce = useViewOnce)
+                .onFailure { err ->
+                    _errorBanner.value = err.localizedMessage ?: "Falha ao enviar fig."
+                }
+            _isSendingMedia.value = false
+        }
+    }
+
+    fun saveCustomStickerOnly(stickerFile: File, title: String) {
+        viewModelScope.launch {
+            chatRepository.saveCustomStickerToCollection(stickerFile, title = title)
+                .onSuccess {
+                    _toastMessage.value = "Fig salva em Minhas Figs!"
+                }
+                .onFailure { err ->
+                    _errorBanner.value = err.localizedMessage ?: "Falha ao salvar fig."
+                }
+        }
+    }
+
+    fun sendSavedStickerOrGif(item: SavedStickerGifEntity) {
+        val room = chatRoom.value ?: return
+        val useViewOnce = _viewOnceMode.value
+        _viewOnceMode.value = false
+        val mainFile = File(item.localFilePath)
+        if (!mainFile.exists()) {
+            _errorBanner.value = "Arquivo salvo não encontrado no dispositivo."
+            return
+        }
+        viewModelScope.launch {
+            _isSendingMedia.value = true
+            val result = when (item.kind) {
+                "STICKER" -> chatRepository.sendStickerMessage(room, myDisplayName, mainFile, viewOnce = useViewOnce)
+                "GIF_AUDIO" -> {
+                    val aud = item.localAudioPath?.let(::File)?.takeIf { it.exists() }
+                    if (aud != null) {
+                        chatRepository.sendGifWithAudioMessage(
+                            chat = room,
+                            senderName = myDisplayName,
+                            gifFile = mainFile,
+                            audioFile = aud,
+                            audioDurationMs = item.audioDurationMs,
+                            viewOnce = useViewOnce
+                        )
+                    } else {
+                        chatRepository.sendGifFileMessage(room, myDisplayName, mainFile, viewOnce = useViewOnce)
+                    }
+                }
+                else -> chatRepository.sendGifFileMessage(room, myDisplayName, mainFile, viewOnce = useViewOnce)
+            }
+            result.onFailure { err ->
+                _errorBanner.value = err.localizedMessage ?: "Falha ao enviar mídia salva."
+            }
+            _isSendingMedia.value = false
+        }
+    }
+
+    fun sendGifWithAudio(
+        gifUri: Uri?,
+        savedGifFile: File?,
+        audioFile: File,
+        durationMs: Long,
+        saveToCollection: Boolean,
+        title: String
+    ) {
+        val room = chatRoom.value ?: return
+        val useViewOnce = _viewOnceMode.value
+        _viewOnceMode.value = false
+        viewModelScope.launch {
+            _isSendingMedia.value = true
+            try {
+                val resolvedGif = withContext(Dispatchers.IO) {
+                    when {
+                        savedGifFile != null && savedGifFile.exists() -> savedGifFile
+                        gifUri != null -> chatRepository.copyUriToScheduledMedia(gifUri, "gif")
+                        else -> throw IllegalStateException("Selecione um GIF primeiro.")
+                    }
+                }
+                if (saveToCollection) {
+                    chatRepository.saveCustomGifWithAudioToCollection(
+                        gifFile = resolvedGif,
+                        audioFile = audioFile,
+                        audioDurationMs = durationMs,
+                        title = title
+                    )
+                }
+                chatRepository.sendGifWithAudioMessage(
+                    chat = room,
+                    senderName = myDisplayName,
+                    gifFile = resolvedGif,
+                    audioFile = audioFile,
+                    audioDurationMs = durationMs,
+                    viewOnce = useViewOnce
+                ).onFailure { err ->
+                    _errorBanner.value = err.localizedMessage ?: "Falha ao enviar GIF com áudio."
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _errorBanner.value = e.localizedMessage ?: "Erro ao preparar GIF com áudio."
+            } finally {
+                _isSendingMedia.value = false
+            }
+        }
+    }
+
+    fun saveMessageMedia(message: ChatMessage) {
+        viewModelScope.launch {
+            chatRepository.saveMessageMediaToCollectionAndGallery(message, exportToGallery = true)
+                .onSuccess { entity ->
+                    val label = when (entity.kind) {
+                        "STICKER" -> "Fig salva em Minhas Figs e na Galeria!"
+                        "GIF_AUDIO" -> "GIF com áudio salvo na coleção e Galeria!"
+                        else -> "GIF salvo na coleção e na Galeria (Pictures/WhatwillIdo)!"
+                    }
+                    _toastMessage.value = label
+                }
+                .onFailure { err ->
+                    _errorBanner.value = err.localizedMessage ?: "Não foi possível salvar esta mídia."
+                }
+        }
+    }
+
+    fun deleteSavedItem(item: SavedStickerGifEntity) {
+        viewModelScope.launch {
+            chatRepository.deleteSavedStickerOrGif(item)
+            _toastMessage.value = "Item removido da coleção."
+        }
+    }
+
+    fun markViewOnceOpened(message: ChatMessage) {
+        viewModelScope.launch {
+            chatRepository.markMessageViewOnceOpened(chatId, message)
+        }
+    }
+
+    fun prepareAudioForMessage(message: ChatMessage, onReady: (File) -> Unit) {
+        viewModelScope.launch {
+            val res = if (message.messageType == "GIF_AUDIO") {
+                chatRepository.downloadMessageAudioFile(message)
+            } else {
+                chatRepository.downloadMessageFile(message)
+            }
+            res.onSuccess(onReady)
+                .onFailure { err ->
+                    _errorBanner.value = err.localizedMessage ?: "Falha ao baixar áudio."
+                }
+        }
+    }
+
+    fun prepareViewOnceContent(
+        message: ChatMessage,
+        onReady: (mainFile: File?, audioFile: File?) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        viewModelScope.launch {
+            if (message.messageType == "TEXT") {
+                onReady(null, null)
+                return@launch
+            }
+            val mainRes = chatRepository.downloadMessageFile(message)
+            if (mainRes.isFailure) {
+                onError(mainRes.exceptionOrNull()?.localizedMessage ?: "Falha ao carregar mídia única.")
+                return@launch
+            }
+            val mainFile = mainRes.getOrNull()
+            val audioFile = if (message.messageType == "GIF_AUDIO" && !message.audioUrl.isNullOrBlank()) {
+                chatRepository.downloadMessageAudioFile(message).getOrNull()
+            } else {
+                null
+            }
+            onReady(mainFile, audioFile)
+        }
+    }
+
+    fun scheduleMessage(
+        context: Context,
+        scheduledAtMs: Long,
+        messageType: String,
+        text: String,
+        savedItem: SavedStickerGifEntity? = null,
+        viewOnce: Boolean = false
+    ) {
+        val room = chatRoom.value ?: return
+        viewModelScope.launch {
+            val mediaFile = savedItem?.localFilePath?.let(::File)?.takeIf { it.exists() }
+            val audioFile = savedItem?.localAudioPath?.let(::File)?.takeIf { it.exists() }
+            ScheduledMessageScheduler.scheduleMessage(
+                context = context,
+                chat = room,
+                senderUid = currentUserId,
+                senderName = myDisplayName,
+                messageType = messageType,
+                text = text,
+                localMediaFile = mediaFile,
+                localAudioFile = audioFile,
+                mediaDurationMs = savedItem?.audioDurationMs ?: 0L,
+                mimeType = when (messageType) {
+                    "STICKER" -> "image/png"
+                    "GIF", "GIF_AUDIO" -> "image/gif"
+                    else -> null
+                },
+                viewOnce = viewOnce,
+                scheduledAtMs = scheduledAtMs
+            ).onSuccess {
+                if (messageType == "TEXT" && _draftText.value.trim() == text.trim()) {
+                    _draftText.value = ""
+                }
+                _viewOnceMode.value = false
+                _toastMessage.value = "Mensagem agendada para ${ScheduledMessageTimeUtils.formatScheduledDateTime(scheduledAtMs)}!"
+            }.onFailure { err ->
+                _errorBanner.value = err.localizedMessage ?: "Não foi possível agendar a mensagem."
+            }
+        }
+    }
+
+    fun cancelScheduledMessage(context: Context, scheduleId: String) {
+        viewModelScope.launch {
+            ScheduledMessageScheduler.cancelScheduledMessage(context, scheduleId)
+            _toastMessage.value = "Agendamento cancelado."
+        }
+    }
+
+    fun sendScheduledMessageNow(context: Context, scheduleId: String) {
+        viewModelScope.launch {
+            ScheduledMessageScheduler.sendScheduledNow(context, scheduleId)
+                .onSuccess { _toastMessage.value = "Enviando mensagem agendada..." }
+                .onFailure { err -> _errorBanner.value = err.localizedMessage }
         }
     }
 
@@ -525,9 +803,6 @@ class ChatDetailViewModel(
         val room = chatRoom.value
         if (isCurrentlyMarkedTyping && room != null) {
             isCurrentlyMarkedTyping = false
-            // Best-effort fire-and-forget cleanup via GlobalScope is avoided;
-            // typing status expires automatically after 12s if view closes abruptly,
-            // and is cleared cleanly onDisposableEffect / send.
         }
     }
 }

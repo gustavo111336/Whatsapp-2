@@ -560,6 +560,78 @@ test("Group chats, messages, and typing indicator parity & security", async () =
     })
   );
 
+  // GIF, STICKER, GIF_AUDIO, and View-Once messages succeed and enforce viewedBy integrity
+  await assertSucceeds(
+    aliceDb.collection("chats").doc("group_1").collection("messages").doc("msg_gif").set({
+      chatId: "group_1",
+      senderId: ALICE_UID,
+      senderName: "Alice",
+      participantUids: [ALICE_UID, BOB_UID, CHARLIE_UID],
+      messageType: "GIF",
+      text: "",
+      mediaUrl: "zap2chunk://chat/group_1/gif123?chunks=1&ext=gif",
+      fileName: "funny.gif",
+      mimeType: "image/gif",
+      deliveredTo: [ALICE_UID],
+      readBy: [ALICE_UID],
+      createdAt: new Date(Date.now() - 215),
+      updatedAt: new Date(Date.now() - 215),
+    })
+  );
+  await assertSucceeds(
+    bobDb.collection("chats").doc("group_1").collection("messages").doc("msg_sticker").set({
+      chatId: "group_1",
+      senderId: BOB_UID,
+      senderName: "Bob",
+      participantUids: [ALICE_UID, BOB_UID, CHARLIE_UID],
+      messageType: "STICKER",
+      text: "",
+      mediaUrl: "zap2chunk://chat/group_1/fig123?chunks=1&ext=png",
+      fileName: "fig.png",
+      mimeType: "image/png",
+      deliveredTo: [BOB_UID],
+      readBy: [BOB_UID],
+      createdAt: new Date(Date.now() - 212),
+      updatedAt: new Date(Date.now() - 212),
+    })
+  );
+  await assertSucceeds(
+    aliceDb.collection("chats").doc("group_1").collection("messages").doc("msg_gif_audio").set({
+      chatId: "group_1",
+      senderId: ALICE_UID,
+      senderName: "Alice",
+      participantUids: [ALICE_UID, BOB_UID, CHARLIE_UID],
+      messageType: "GIF_AUDIO",
+      text: "",
+      mediaUrl: "zap2chunk://chat/group_1/gif456?chunks=1&ext=gif",
+      fileName: "meme.gif",
+      mimeType: "image/gif",
+      audioUrl: "zap2chunk://chat/group_1/aud456?chunks=1&ext=m4a",
+      audioFileName: "meme.m4a",
+      audioMimeType: "audio/mp4",
+      mediaDurationMs: 3200,
+      viewOnce: true,
+      viewedBy: [],
+      deliveredTo: [ALICE_UID],
+      readBy: [ALICE_UID],
+      createdAt: new Date(Date.now() - 210),
+      updatedAt: new Date(Date.now() - 210),
+    })
+  );
+  await assertSucceeds(
+    bobDb.collection("chats").doc("group_1").collection("messages").doc("msg_gif_audio").update({
+      viewedBy: [BOB_UID],
+      updatedAt: new Date(Date.now() - 208),
+    })
+  );
+  // Cannot erase existing viewedBy entries
+  await assertFails(
+    charlieDb.collection("chats").doc("group_1").collection("messages").doc("msg_gif_audio").update({
+      viewedBy: [CHARLIE_UID],
+      updatedAt: new Date(Date.now() - 206),
+    })
+  );
+
   // Sender Bob can edit his own message; Charlie cannot edit Bob's message
   await assertSucceeds(
     bobDb.collection("chats").doc("group_1").collection("messages").doc("msg_1").update({

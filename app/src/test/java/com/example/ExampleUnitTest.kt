@@ -1,13 +1,17 @@
 package com.example
 
 import com.example.data.local.DEFAULT_AI_MODEL
+import com.example.data.model.ChatMessage
 import com.example.service.AiAssistantService
 import com.example.service.CodeVerificationOutcome
 import com.example.service.EmailDeliveryService
 import com.example.service.EmailVerificationHelper
 import com.example.service.EmailVerificationTarget
+import com.example.service.ScheduledMessageTimeUtils
 import org.junit.Assert.*
 import org.junit.Test
+import java.util.Calendar
+import java.util.TimeZone
 
 /**
  * Example local unit test, which will execute on the development machine (host).
@@ -88,5 +92,39 @@ class ExampleUnitTest {
     assertTrue(EmailDeliveryService.isSecureHttpsUrl("https://script.google.com/macros/s/abc/exec"))
     assertFalse(EmailDeliveryService.isSecureHttpsUrl("http://script.google.com/macros/s/abc/exec"))
     assertFalse(EmailDeliveryService.isSecureHttpsUrl("javascript:alert(1)"))
+  }
+
+  @Test
+  fun scheduledMessageTimeUtils_combinesUtcDateAndLocalTimeWithoutDayShift() {
+    val utcCal = Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {
+      clear()
+      set(2027, Calendar.JULY, 6, 0, 0, 0)
+    }
+    val saoPauloTz = TimeZone.getTimeZone("America/Sao_Paulo")
+    val combinedMs = ScheduledMessageTimeUtils.combineDateAndTimeMillis(
+      utcDatePickerMillis = utcCal.timeInMillis,
+      hour = 12,
+      minute = 0,
+      targetTimeZone = saoPauloTz
+    )
+    val formatted = ScheduledMessageTimeUtils.formatScheduledDateTime(combinedMs, saoPauloTz)
+    assertEquals("06/07/2027 às 12:00", formatted)
+
+    assertTrue(ScheduledMessageTimeUtils.isValidFutureSchedule(combinedMs, nowMs = combinedMs - 15_000L))
+    assertFalse(ScheduledMessageTimeUtils.isValidFutureSchedule(combinedMs, nowMs = combinedMs - 5_000L))
+  }
+
+  @Test
+  fun chatMessage_defaultsSupportViewOnceAndGifAudio() {
+    val msg = ChatMessage(
+      id = "m1",
+      messageType = "GIF_AUDIO",
+      viewOnce = true,
+      audioUrl = "https://example.com/a.m4a"
+    )
+    assertTrue(msg.viewOnce)
+    assertTrue(msg.viewedBy.isEmpty())
+    assertEquals("GIF_AUDIO", msg.messageType)
+    assertEquals("https://example.com/a.m4a", msg.audioUrl)
   }
 }

@@ -1,10 +1,14 @@
 package com.example.data.remote
 
+import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Base64
 import android.util.Log
@@ -12,6 +16,8 @@ import android.webkit.MimeTypeMap
 import com.example.R
 import com.example.data.local.LocalChatEntity
 import com.example.data.local.LocalMessageEntity
+import com.example.data.local.SavedStickerGifEntity
+import com.example.data.local.ScheduledMessageEntity
 import com.example.data.local.SettingsDataStore
 import com.example.data.local.Zap2Dao
 import com.example.data.model.ChatMessage
@@ -71,6 +77,18 @@ class ChatRepository(
 
     private val downloadsDir: File by lazy {
         File(context.filesDir, "downloads").apply { mkdirs() }
+    }
+
+    private val savedGifsDir: File by lazy {
+        File(context.filesDir, "saved_gifs").apply { mkdirs() }
+    }
+
+    private val savedStickersDir: File by lazy {
+        File(context.filesDir, "saved_stickers").apply { mkdirs() }
+    }
+
+    private val scheduledMediaDir: File by lazy {
+        File(context.filesDir, "scheduled_media").apply { mkdirs() }
     }
 
     private val _uploadProgress = MutableStateFlow<UploadProgressState?>(null)
@@ -179,7 +197,12 @@ class ChatRepository(
                                 fileSizeBytes = m.fileSizeBytes,
                                 mimeType = m.mimeType,
                                 edited = m.edited,
-                                createdAtMs = m.createdAt?.toDate()?.time ?: System.currentTimeMillis()
+                                createdAtMs = m.createdAt?.toDate()?.time ?: System.currentTimeMillis(),
+                                audioUrl = m.audioUrl,
+                                audioMimeType = m.audioMimeType,
+                                localAudioPath = m.localAudioPath,
+                                viewOnce = m.viewOnce,
+                                viewedByJson = Json.encodeToString(m.viewedBy)
                             )
                         }
                     )
@@ -586,7 +609,8 @@ class ChatRepository(
     suspend fun sendTextMessage(
         chat: ChatRoom,
         senderName: String,
-        text: String
+        text: String,
+        viewOnce: Boolean = false
     ): Result<Unit> {
         val uid = try {
             requireUserId()
@@ -599,7 +623,7 @@ class ChatRepository(
         val msgPath = "chats/${chat.id}/messages/$msgId"
 
         return try {
-            val msgPayload = mapOf(
+            val msgPayload = mutableMapOf<String, Any>(
                 "chatId" to chat.id,
                 "senderId" to uid,
                 "senderName" to senderName.take(80).ifBlank { "Você" },
@@ -611,14 +635,19 @@ class ChatRepository(
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
             )
+            if (viewOnce) {
+                msgPayload["viewOnce"] = true
+                msgPayload["viewedBy"] = emptyList<String>()
+            }
             db.collection("chats").document(chat.id)
                 .collection("messages").document(msgId)
                 .set(msgPayload)
                 .await()
 
+            val preview = if (viewOnce) "🔒 Mensagem única" else cleanText.take(500)
             db.collection("chats").document(chat.id).update(
                 mapOf(
-                    "lastMessageText" to cleanText.take(500),
+                    "lastMessageText" to preview,
                     "lastMessageType" to "TEXT",
                     "lastMessageSenderId" to uid,
                     "lastMessageAt" to FieldValue.serverTimestamp(),
@@ -640,7 +669,8 @@ class ChatRepository(
         chat: ChatRoom,
         senderName: String,
         imageUri: Uri,
-        caption: String = ""
+        caption: String = "",
+        viewOnce: Boolean = false
     ): Result<Unit> {
         val uid = try {
             requireUserId()
@@ -651,10 +681,11 @@ class ChatRepository(
         return try {
             val resolvedMime = context.contentResolver.getType(imageUri)?.lowercase() ?: "image/jpeg"
             val originalName = resolveDisplayName(imageUri) ?: "foto_$msgId.jpg"
+            val isGif = resolvedMime == "image/gif" || originalName.endsWith(".gif", ignoreCase = true)
             val (localFile, finalMime) = withContext(Dispatchers.IO) {
-                if (resolvedMime == "image/gif") {
+                if (isGif) {
                     val safeGifName = sanitizeFileName(originalName, "gif")
-                    val dest = File(mediaDir, "img_${chat.id}_${msgId}_$safeGifName")
+                    val dest = File(mediaDir, "gif_${chat.id}_${msgId}_$safeGifName")
                     copyUriToFile(imageUri, dest)
                     dest to "image/gif"
                 } else {
@@ -665,6 +696,7 @@ class ChatRepository(
                 }
             }
 
+            val messageType = if (isGif) "GIF" else "IMAGE"
             val fileSize = localFile.length()
             val mediaUrl = uploadFileFree(
                 chat = chat,
@@ -674,13 +706,18 @@ class ChatRepository(
                 mimeType = finalMime
             )
 
-            val previewText = caption.trim().ifBlank { "📷 Foto" }.take(500)
+            val previewText = when {
+                viewOnce && isGif -> "🔒 GIF único"
+                viewOnce -> "🔒 Foto única"
+                isGif -> caption.trim().ifBlank { "🎞️ GIF" }
+                else -> caption.trim().ifBlank { "📷 Foto" }
+            }.take(500)
             val payload = mutableMapOf<String, Any?>(
                 "chatId" to chat.id,
                 "senderId" to uid,
                 "senderName" to senderName.take(80).ifBlank { "Você" },
                 "participantUids" to chat.participantUids,
-                "messageType" to "IMAGE",
+                "messageType" to messageType,
                 "text" to caption.trim().take(4000),
                 "mediaUrl" to mediaUrl.take(MAX_STORAGE_URL_LENGTH),
                 "localMediaPath" to localFile.absolutePath.take(500),
@@ -691,8 +728,91 @@ class ChatRepository(
                 "readBy" to listOf(uid),
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
-            ).filterValues { it != null } as Map<String, Any>
+            )
+            if (viewOnce) {
+                payload["viewOnce"] = true
+                payload["viewedBy"] = emptyList<String>()
+            }
+            val cleanPayload = payload.filterValues { it != null } as Map<String, Any>
 
+            db.collection("chats").document(chat.id)
+                .collection("messages").document(msgId)
+                .set(cleanPayload)
+                .await()
+
+            db.collection("chats").document(chat.id).update(
+                mapOf(
+                    "lastMessageText" to previewText,
+                    "lastMessageType" to messageType,
+                    "lastMessageSenderId" to uid,
+                    "lastMessageAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, "chats/${chat.id}/messages/$msgId")
+            Result.failure(e)
+        } finally {
+            _uploadProgress.value = null
+        }
+    }
+
+    suspend fun sendGifFileMessage(
+        chat: ChatRoom,
+        senderName: String,
+        gifFile: File,
+        caption: String = "",
+        viewOnce: Boolean = false
+    ): Result<Unit> {
+        val uid = try {
+            requireUserId()
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+        val msgId = UUID.randomUUID().toString().replace("-", "")
+        return try {
+            val savedLocal = withContext(Dispatchers.IO) {
+                val dest = File(mediaDir, "gif_${chat.id}_$msgId.gif")
+                gifFile.copyTo(dest, overwrite = true)
+                dest
+            }
+            val fileSize = savedLocal.length()
+            val mediaUrl = uploadFileFree(
+                chat = chat,
+                senderId = uid,
+                file = savedLocal,
+                displayName = gifFile.name.ifBlank { "animado.gif" },
+                mimeType = "image/gif"
+            )
+            val previewText = when {
+                viewOnce -> "🔒 GIF único"
+                caption.isNotBlank() -> caption.trim()
+                else -> "🎞️ GIF"
+            }.take(500)
+            val payload = mutableMapOf<String, Any>(
+                "chatId" to chat.id,
+                "senderId" to uid,
+                "senderName" to senderName.take(80).ifBlank { "Você" },
+                "participantUids" to chat.participantUids,
+                "messageType" to "GIF",
+                "text" to caption.trim().take(4000),
+                "mediaUrl" to mediaUrl.take(MAX_STORAGE_URL_LENGTH),
+                "localMediaPath" to savedLocal.absolutePath.take(500),
+                "fileName" to savedLocal.name.take(255),
+                "fileSizeBytes" to fileSize,
+                "mimeType" to "image/gif",
+                "deliveredTo" to listOf(uid),
+                "readBy" to listOf(uid),
+                "createdAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            if (viewOnce) {
+                payload["viewOnce"] = true
+                payload["viewedBy"] = emptyList<String>()
+            }
             db.collection("chats").document(chat.id)
                 .collection("messages").document(msgId)
                 .set(payload)
@@ -701,7 +821,174 @@ class ChatRepository(
             db.collection("chats").document(chat.id).update(
                 mapOf(
                     "lastMessageText" to previewText,
-                    "lastMessageType" to "IMAGE",
+                    "lastMessageType" to "GIF",
+                    "lastMessageSenderId" to uid,
+                    "lastMessageAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, "chats/${chat.id}/messages/$msgId")
+            Result.failure(e)
+        } finally {
+            _uploadProgress.value = null
+        }
+    }
+
+    suspend fun sendStickerMessage(
+        chat: ChatRoom,
+        senderName: String,
+        stickerFile: File,
+        viewOnce: Boolean = false
+    ): Result<Unit> {
+        val uid = try {
+            requireUserId()
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+        val msgId = UUID.randomUUID().toString().replace("-", "")
+        return try {
+            val savedLocal = withContext(Dispatchers.IO) {
+                val dest = File(mediaDir, "fig_${chat.id}_$msgId.png")
+                stickerFile.copyTo(dest, overwrite = true)
+                dest
+            }
+            val fileSize = savedLocal.length()
+            val mediaUrl = uploadFileFree(
+                chat = chat,
+                senderId = uid,
+                file = savedLocal,
+                displayName = "fig_$msgId.png",
+                mimeType = "image/png"
+            )
+            val previewText = if (viewOnce) "🔒 Fig única" else "✨ Fig"
+            val payload = mutableMapOf<String, Any>(
+                "chatId" to chat.id,
+                "senderId" to uid,
+                "senderName" to senderName.take(80).ifBlank { "Você" },
+                "participantUids" to chat.participantUids,
+                "messageType" to "STICKER",
+                "text" to "",
+                "mediaUrl" to mediaUrl.take(MAX_STORAGE_URL_LENGTH),
+                "localMediaPath" to savedLocal.absolutePath.take(500),
+                "fileName" to savedLocal.name.take(255),
+                "fileSizeBytes" to fileSize,
+                "mimeType" to "image/png",
+                "deliveredTo" to listOf(uid),
+                "readBy" to listOf(uid),
+                "createdAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            if (viewOnce) {
+                payload["viewOnce"] = true
+                payload["viewedBy"] = emptyList<String>()
+            }
+            db.collection("chats").document(chat.id)
+                .collection("messages").document(msgId)
+                .set(payload)
+                .await()
+
+            db.collection("chats").document(chat.id).update(
+                mapOf(
+                    "lastMessageText" to previewText,
+                    "lastMessageType" to "STICKER",
+                    "lastMessageSenderId" to uid,
+                    "lastMessageAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, "chats/${chat.id}/messages/$msgId")
+            Result.failure(e)
+        } finally {
+            _uploadProgress.value = null
+        }
+    }
+
+    suspend fun sendGifWithAudioMessage(
+        chat: ChatRoom,
+        senderName: String,
+        gifFile: File,
+        audioFile: File,
+        audioDurationMs: Long,
+        caption: String = "",
+        viewOnce: Boolean = false
+    ): Result<Unit> {
+        val uid = try {
+            requireUserId()
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+        val msgId = UUID.randomUUID().toString().replace("-", "")
+        return try {
+            val (savedGif, savedAudio) = withContext(Dispatchers.IO) {
+                val g = File(mediaDir, "gifaud_${chat.id}_$msgId.gif")
+                gifFile.copyTo(g, overwrite = true)
+                val a = File(mediaDir, "gifaud_${chat.id}_$msgId.m4a")
+                audioFile.copyTo(a, overwrite = true)
+                g to a
+            }
+            val gifUrl = uploadFileFree(
+                chat = chat,
+                senderId = uid,
+                file = savedGif,
+                displayName = "gif_${msgId}.gif",
+                mimeType = "image/gif"
+            )
+            val audioUrl = uploadFileFree(
+                chat = chat,
+                senderId = uid,
+                file = savedAudio,
+                displayName = "audio_${msgId}.m4a",
+                mimeType = "audio/mp4"
+            )
+            val previewText = when {
+                viewOnce -> "🔒 GIF c/ áudio único"
+                caption.isNotBlank() -> caption.trim()
+                else -> "🎞️🔊 GIF com áudio"
+            }.take(500)
+
+            val payload = mutableMapOf<String, Any>(
+                "chatId" to chat.id,
+                "senderId" to uid,
+                "senderName" to senderName.take(80).ifBlank { "Você" },
+                "participantUids" to chat.participantUids,
+                "messageType" to "GIF_AUDIO",
+                "text" to caption.trim().take(4000),
+                "mediaUrl" to gifUrl.take(MAX_STORAGE_URL_LENGTH),
+                "localMediaPath" to savedGif.absolutePath.take(500),
+                "fileName" to savedGif.name.take(255),
+                "fileSizeBytes" to savedGif.length(),
+                "mimeType" to "image/gif",
+                "audioUrl" to audioUrl.take(MAX_STORAGE_URL_LENGTH),
+                "audioFileName" to savedAudio.name.take(255),
+                "audioMimeType" to "audio/mp4",
+                "localAudioPath" to savedAudio.absolutePath.take(500),
+                "mediaDurationMs" to audioDurationMs.coerceAtLeast(0L),
+                "deliveredTo" to listOf(uid),
+                "readBy" to listOf(uid),
+                "createdAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            if (viewOnce) {
+                payload["viewOnce"] = true
+                payload["viewedBy"] = emptyList<String>()
+            }
+            db.collection("chats").document(chat.id)
+                .collection("messages").document(msgId)
+                .set(payload)
+                .await()
+
+            db.collection("chats").document(chat.id).update(
+                mapOf(
+                    "lastMessageText" to previewText,
+                    "lastMessageType" to "GIF_AUDIO",
                     "lastMessageSenderId" to uid,
                     "lastMessageAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp()
@@ -722,7 +1009,8 @@ class ChatRepository(
         chat: ChatRoom,
         senderName: String,
         audioFile: File,
-        durationMs: Long
+        durationMs: Long,
+        viewOnce: Boolean = false
     ): Result<Unit> {
         val uid = try {
             requireUserId()
@@ -746,7 +1034,7 @@ class ChatRepository(
                 mimeType = "audio/mp4"
             )
 
-            val payload = mapOf(
+            val payload = mutableMapOf<String, Any>(
                 "chatId" to chat.id,
                 "senderId" to uid,
                 "senderName" to senderName.take(80).ifBlank { "Você" },
@@ -764,15 +1052,20 @@ class ChatRepository(
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
             )
+            if (viewOnce) {
+                payload["viewOnce"] = true
+                payload["viewedBy"] = emptyList<String>()
+            }
 
             db.collection("chats").document(chat.id)
                 .collection("messages").document(msgId)
                 .set(payload)
                 .await()
 
+            val preview = if (viewOnce) "🔒 Áudio único" else "🎤 Mensagem de voz"
             db.collection("chats").document(chat.id).update(
                 mapOf(
-                    "lastMessageText" to "🎤 Mensagem de voz",
+                    "lastMessageText" to preview,
                     "lastMessageType" to "AUDIO",
                     "lastMessageSenderId" to uid,
                     "lastMessageAt" to FieldValue.serverTimestamp(),
@@ -794,7 +1087,33 @@ class ChatRepository(
         chat: ChatRoom,
         senderName: String,
         videoUri: Uri,
-        caption: String = ""
+        caption: String = "",
+        viewOnce: Boolean = false
+    ): Result<Unit> {
+        val originalName = resolveDisplayName(videoUri) ?: "video_${System.currentTimeMillis()}.mp4"
+        val mimeType = context.contentResolver.getType(videoUri)?.lowercase() ?: "video/mp4"
+        val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType)
+            ?: originalName.substringAfterLast('.', "mp4").lowercase().ifBlank { "mp4" }
+        val tempFile = withContext(Dispatchers.IO) {
+            val dest = File(context.cacheDir, "tmp_vid_${UUID.randomUUID()}.$ext")
+            copyUriToFile(videoUri, dest)
+            dest
+        }
+        return try {
+            sendVideoFileMessage(chat, senderName, tempFile, originalName, mimeType, caption, viewOnce)
+        } finally {
+            runCatching { tempFile.delete() }
+        }
+    }
+
+    suspend fun sendVideoFileMessage(
+        chat: ChatRoom,
+        senderName: String,
+        videoFile: File,
+        originalName: String = videoFile.name.ifBlank { "video.mp4" },
+        mimeType: String = "video/mp4",
+        caption: String = "",
+        viewOnce: Boolean = false
     ): Result<Unit> {
         val uid = try {
             requireUserId()
@@ -803,14 +1122,10 @@ class ChatRepository(
         }
         val msgId = UUID.randomUUID().toString().replace("-", "")
         return try {
-            val originalName = resolveDisplayName(videoUri) ?: "video_$msgId.mp4"
-            val mimeType = context.contentResolver.getType(videoUri)?.lowercase() ?: "video/mp4"
-            val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType)
-                ?: originalName.substringAfterLast('.', "mp4").lowercase().ifBlank { "mp4" }
-
+            val ext = originalName.substringAfterLast('.', "mp4").lowercase().ifBlank { "mp4" }
             val (localFile, durationMs) = withContext(Dispatchers.IO) {
                 val dest = File(mediaDir, "vid_${chat.id}_$msgId.$ext")
-                copyUriToFile(videoUri, dest)
+                videoFile.copyTo(dest, overwrite = true)
                 val dur = readVideoDurationMs(dest)
                 dest to dur
             }
@@ -824,7 +1139,10 @@ class ChatRepository(
                 mimeType = mimeType
             )
 
-            val previewText = caption.trim().ifBlank { "🎬 Vídeo ($originalName)" }.take(500)
+            val previewText = when {
+                viewOnce -> "🔒 Vídeo único"
+                else -> caption.trim().ifBlank { "🎬 Vídeo ($originalName)" }
+            }.take(500)
             val payload = mutableMapOf<String, Any?>(
                 "chatId" to chat.id,
                 "senderId" to uid,
@@ -842,11 +1160,16 @@ class ChatRepository(
                 "readBy" to listOf(uid),
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
-            ).filterValues { it != null } as Map<String, Any>
+            )
+            if (viewOnce) {
+                payload["viewOnce"] = true
+                payload["viewedBy"] = emptyList<String>()
+            }
+            val cleanPayload = payload.filterValues { it != null } as Map<String, Any>
 
             db.collection("chats").document(chat.id)
                 .collection("messages").document(msgId)
-                .set(payload)
+                .set(cleanPayload)
                 .await()
 
             db.collection("chats").document(chat.id).update(
@@ -1351,6 +1674,241 @@ class ChatRepository(
             } catch (e: Exception) {
                 handleFirestoreError(e, OperationType.UPDATE, "chats/$chatId/messages/${msg.id}")
             }
+        }
+    }
+
+    suspend fun markMessageViewOnceOpened(chatId: String, message: ChatMessage): Result<Unit> {
+        val uid = try {
+            requireUserId()
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+        return try {
+            db.collection("chats").document(chatId)
+                .collection("messages").document(message.id)
+                .update(
+                    mapOf(
+                        "viewedBy" to FieldValue.arrayUnion(uid),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+                .await()
+            if (message.senderId != uid) {
+                message.localMediaPath?.let { path -> runCatching { File(path).delete() } }
+                message.localAudioPath?.let { path -> runCatching { File(path).delete() } }
+            }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, "chats/$chatId/messages/${message.id}")
+            Result.failure(e)
+        }
+    }
+
+    suspend fun downloadMessageAudioFile(message: ChatMessage): Result<File> = withContext(Dispatchers.IO) {
+        try {
+            val localExisting = message.localAudioPath?.let(::File)?.takeIf { it.exists() && it.length() > 0L }
+            if (localExisting != null) {
+                return@withContext Result.success(localExisting)
+            }
+            val preferredName = sanitizeFileName(message.audioFileName ?: "audio_${message.id}.m4a", "m4a")
+            val cachedDest = File(downloadsDir, "${message.id}_$preferredName")
+            if (cachedDest.exists() && cachedDest.length() > 0L) {
+                return@withContext Result.success(cachedDest)
+            }
+            val url = message.audioUrl?.takeIf { it.isNotBlank() }
+                ?: return@withContext Result.failure(IllegalStateException("Áudio não disponível."))
+            val resolved = freeStorageManager.resolveToFile(
+                url = url,
+                preferredFileName = preferredName,
+                expectedSizeBytes = null,
+                onProgress = {}
+            ).getOrElse { return@withContext Result.failure(it) }
+            if (resolved.absolutePath != cachedDest.absolutePath) {
+                resolved.copyTo(cachedDest, overwrite = true)
+            }
+            Result.success(cachedDest)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    fun observeSavedStickersAndGifs(): Flow<List<SavedStickerGifEntity>> =
+        dao.observeSavedStickersAndGifs()
+
+    suspend fun deleteSavedStickerOrGif(item: SavedStickerGifEntity) {
+        withContext(Dispatchers.IO) {
+            runCatching { File(item.localFilePath).delete() }
+            item.localAudioPath?.let { path -> runCatching { File(path).delete() } }
+            dao.deleteSavedStickerGifById(item.id)
+        }
+    }
+
+    suspend fun saveCustomStickerToCollection(
+        stickerFile: File,
+        title: String = "Minha Fig",
+        exportToGallery: Boolean = false
+    ): Result<SavedStickerGifEntity> = withContext(Dispatchers.IO) {
+        try {
+            val id = UUID.randomUUID().toString().replace("-", "").take(16)
+            val dest = File(savedStickersDir, "fig_${id}.png")
+            stickerFile.copyTo(dest, overwrite = true)
+            val entity = SavedStickerGifEntity(
+                id = id,
+                kind = "STICKER",
+                title = title.trim().ifBlank { "Minha Fig" }.take(60),
+                localFilePath = dest.absolutePath,
+                createdAtMs = System.currentTimeMillis()
+            )
+            dao.upsertSavedStickerGif(entity)
+            if (exportToGallery) {
+                exportMediaToPicturesWhatwillIdo(dest, "image/png", "WhatwillIdo_Fig_$id.png")
+            }
+            Result.success(entity)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun saveCustomGifWithAudioToCollection(
+        gifFile: File,
+        audioFile: File,
+        audioDurationMs: Long,
+        title: String = "GIF com Áudio"
+    ): Result<SavedStickerGifEntity> = withContext(Dispatchers.IO) {
+        try {
+            val id = UUID.randomUUID().toString().replace("-", "").take(16)
+            val destGif = File(savedGifsDir, "gif_${id}.gif")
+            gifFile.copyTo(destGif, overwrite = true)
+            val destAud = File(savedGifsDir, "aud_${id}.m4a")
+            audioFile.copyTo(destAud, overwrite = true)
+            val entity = SavedStickerGifEntity(
+                id = id,
+                kind = "GIF_AUDIO",
+                title = title.trim().ifBlank { "GIF com Áudio" }.take(60),
+                localFilePath = destGif.absolutePath,
+                localAudioPath = destAud.absolutePath,
+                audioDurationMs = audioDurationMs.coerceAtLeast(0L),
+                createdAtMs = System.currentTimeMillis()
+            )
+            dao.upsertSavedStickerGif(entity)
+            Result.success(entity)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun saveMessageMediaToCollectionAndGallery(
+        message: ChatMessage,
+        exportToGallery: Boolean = true
+    ): Result<SavedStickerGifEntity> = withContext(Dispatchers.IO) {
+        try {
+            if (message.viewOnce) {
+                return@withContext Result.failure(IllegalStateException("Mídias de visualização única não podem ser salvas."))
+            }
+            val mainFile = downloadMessageFile(message).getOrElse { return@withContext Result.failure(it) }
+            val kind = when (message.messageType) {
+                "STICKER" -> "STICKER"
+                "GIF_AUDIO" -> "GIF_AUDIO"
+                else -> "GIF"
+            }
+            val ext = if (kind == "STICKER") "png" else "gif"
+            val mime = if (kind == "STICKER") "image/png" else "image/gif"
+            val targetDir = if (kind == "STICKER") savedStickersDir else savedGifsDir
+            val id = "msg_${message.id.take(16)}"
+            val destFile = File(targetDir, "${kind.lowercase()}_$id.$ext")
+            mainFile.copyTo(destFile, overwrite = true)
+
+            var destAudioPath: String? = null
+            if (kind == "GIF_AUDIO" && !message.audioUrl.isNullOrBlank()) {
+                val audFile = downloadMessageAudioFile(message).getOrNull()
+                if (audFile != null && audFile.exists()) {
+                    val audDest = File(savedGifsDir, "aud_$id.m4a")
+                    audFile.copyTo(audDest, overwrite = true)
+                    destAudioPath = audDest.absolutePath
+                }
+            }
+
+            val title = when (kind) {
+                "STICKER" -> "Fig salva"
+                "GIF_AUDIO" -> "GIF c/ Áudio salvo"
+                else -> message.fileName?.substringBeforeLast('.')?.ifBlank { "GIF salvo" } ?: "GIF salvo"
+            }
+            val entity = SavedStickerGifEntity(
+                id = id,
+                kind = kind,
+                title = title.take(60),
+                localFilePath = destFile.absolutePath,
+                localAudioPath = destAudioPath,
+                audioDurationMs = message.mediaDurationMs ?: 0L,
+                remoteMediaUrl = message.mediaUrl,
+                remoteAudioUrl = message.audioUrl,
+                createdAtMs = System.currentTimeMillis()
+            )
+            dao.upsertSavedStickerGif(entity)
+
+            if (exportToGallery) {
+                exportMediaToPicturesWhatwillIdo(destFile, mime, "WhatwillIdo_${id}.$ext")
+            }
+            Result.success(entity)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun exportMediaToPicturesWhatwillIdo(file: File, mimeType: String, displayName: String) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        runCatching {
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, displayName)
+                put(MediaStore.Images.Media.MIME_TYPE, mimeType)
+                put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/WhatwillIdo")
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+            val resolver = context.contentResolver
+            val itemUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return
+            resolver.openOutputStream(itemUri)?.use { out ->
+                file.inputStream().use { input -> input.copyTo(out) }
+            }
+            values.clear()
+            values.put(MediaStore.Images.Media.IS_PENDING, 0)
+            resolver.update(itemUri, values, null, null)
+        }.onFailure { err ->
+            Log.w(TAG, "Export to gallery failed: ${err.message}")
+        }
+    }
+
+    fun copyUriToScheduledMedia(uri: Uri, extFallback: String): File {
+        val ext = resolveDisplayName(uri)?.substringAfterLast('.', extFallback)?.lowercase()?.ifBlank { extFallback }
+            ?: extFallback
+        val dest = File(scheduledMediaDir, "sched_${UUID.randomUUID()}.$ext")
+        copyUriToFile(uri, dest)
+        return dest
+    }
+
+    fun copyFileToScheduledMedia(source: File, extFallback: String): File {
+        val ext = source.extension.lowercase().ifBlank { extFallback }
+        val dest = File(scheduledMediaDir, "sched_${UUID.randomUUID()}.$ext")
+        source.copyTo(dest, overwrite = true)
+        return dest
+    }
+
+    fun observeScheduledMessages(chatId: String): Flow<List<ScheduledMessageEntity>> =
+        dao.observePendingScheduledForChat(chatId)
+
+    suspend fun getChatRoomOnce(chatId: String): ChatRoom? {
+        return try {
+            db.collection("chats").document(chatId)
+                .get()
+                .await()
+                .toObject(ChatRoom::class.java)
+        } catch (e: Exception) {
+            null
         }
     }
 
