@@ -14,7 +14,7 @@ import androidx.sqlite.db.SimpleSQLiteQuery
         SavedStickerGifEntity::class,
         ScheduledMessageEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class Zap2Database : RoomDatabase() {
@@ -91,6 +91,14 @@ abstract class Zap2Database : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_4_5 = object : androidx.room.migration.Migration(4, 5) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE local_messages ADD COLUMN aiGenerated INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE local_messages ADD COLUMN aiPersona TEXT")
+                db.execSQL("ALTER TABLE local_messages ADD COLUMN aiModel TEXT")
+            }
+        }
+
         @Volatile
         private var INSTANCE: Zap2Database? = null
 
@@ -101,7 +109,7 @@ abstract class Zap2Database : RoomDatabase() {
                     Zap2Database::class.java,
                     DB_NAME
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
                     .also { INSTANCE = it }

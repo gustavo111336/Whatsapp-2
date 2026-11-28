@@ -632,6 +632,42 @@ test("Group chats, messages, and typing indicator parity & security", async () =
     })
   );
 
+  // AI participant message attributed to caller UID succeeds; spoofing another senderId fails
+  await assertSucceeds(
+    aliceDb.collection("chats").doc("group_1").collection("messages").doc("msg_ai_grok").set({
+      chatId: "group_1",
+      senderId: ALICE_UID,
+      senderName: "Alice",
+      participantUids: [ALICE_UID, BOB_UID, CHARLIE_UID],
+      messageType: "TEXT",
+      text: "E aí pessoal, concordo com o Bob!",
+      aiGenerated: true,
+      aiPersona: "Grok",
+      aiModel: "grok-3-mini",
+      deliveredTo: [ALICE_UID],
+      readBy: [ALICE_UID],
+      createdAt: new Date(Date.now() - 204),
+      updatedAt: new Date(Date.now() - 204),
+    })
+  );
+  await assertFails(
+    bobDb.collection("chats").doc("group_1").collection("messages").doc("msg_ai_spoof").set({
+      chatId: "group_1",
+      senderId: ALICE_UID,
+      senderName: "Alice",
+      participantUids: [ALICE_UID, BOB_UID, CHARLIE_UID],
+      messageType: "TEXT",
+      text: "Spoof",
+      aiGenerated: true,
+      aiPersona: "ChatGPT",
+      aiModel: "gpt-4o-mini",
+      deliveredTo: [BOB_UID],
+      readBy: [BOB_UID],
+      createdAt: new Date(Date.now() - 203),
+      updatedAt: new Date(Date.now() - 203),
+    })
+  );
+
   // Sender Bob can edit his own message; Charlie cannot edit Bob's message
   await assertSucceeds(
     bobDb.collection("chats").doc("group_1").collection("messages").doc("msg_1").update({

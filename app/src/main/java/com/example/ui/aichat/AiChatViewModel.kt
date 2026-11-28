@@ -7,6 +7,7 @@ import com.example.data.local.SettingsDataStore
 import com.example.data.local.UserSettings
 import com.example.service.AiAssistantService
 import com.example.service.AiChatEntry
+import com.example.service.ChatAiCommand
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -67,11 +68,22 @@ class AiChatViewModel(
         apiKey: String,
         model: String,
         provider: String,
-        customBaseUrl: String
+        customBaseUrl: String,
+        personaName: String = "",
+        customInstructions: String = "",
+        autoReplyPeers: Boolean = true
     ) {
         viewModelScope.launch {
             val prevModel = settingsStore.settingsFlow.first().aiModel
-            settingsStore.saveAiConfig(apiKey, model, provider, customBaseUrl)
+            settingsStore.saveAiConfig(
+                apiKey = apiKey,
+                model = model,
+                provider = provider,
+                customBaseUrl = customBaseUrl,
+                personaName = personaName,
+                customInstructions = customInstructions,
+                autoReplyPeers = autoReplyPeers
+            )
             _showConfigDialog.value = false
             _errorBanner.value = null
             val savedModel = model.trim().ifBlank { DEFAULT_AI_MODEL }
@@ -101,6 +113,13 @@ class AiChatViewModel(
         if (rawText.equals("/clear", ignoreCase = true) || rawText.equals("/limpar", ignoreCase = true)) {
             _draftText.value = ""
             clearConversation()
+            return
+        }
+
+        // Handle /ai --configure
+        if (AiAssistantService.parseChatAiCommand(rawText) is ChatAiCommand.Configure) {
+            _draftText.value = ""
+            _showConfigDialog.value = true
             return
         }
 

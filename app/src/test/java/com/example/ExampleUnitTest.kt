@@ -1,8 +1,14 @@
 package com.example
 
+import com.example.data.local.AI_PROVIDER_CHATGPT
+import com.example.data.local.AI_PROVIDER_CLAUDE
+import com.example.data.local.AI_PROVIDER_GEMINI
+import com.example.data.local.AI_PROVIDER_GROK
 import com.example.data.local.DEFAULT_AI_MODEL
+import com.example.data.local.UserSettings
 import com.example.data.model.ChatMessage
 import com.example.service.AiAssistantService
+import com.example.service.ChatAiCommand
 import com.example.service.CodeVerificationOutcome
 import com.example.service.EmailDeliveryService
 import com.example.service.EmailVerificationHelper
@@ -37,6 +43,112 @@ class ExampleUnitTest {
   fun normalizeModelName_fallsBackToDefaultWhenBlank() {
     assertEquals(DEFAULT_AI_MODEL, AiAssistantService.normalizeModelName("   "))
     assertEquals("gemini-4-argon", AiAssistantService.normalizeModelName("**gemini-4-argon**"))
+  }
+
+  @Test
+  fun parseChatAiCommand_recognizesEnableConfigureDisableAndPrompt() {
+    assertEquals(ChatAiCommand.EnableAndSpeak(null), AiAssistantService.parseChatAiCommand("/ai"))
+    assertEquals(ChatAiCommand.EnableAndSpeak(null), AiAssistantService.parseChatAiCommand("  /AI  "))
+    assertEquals(ChatAiCommand.Configure, AiAssistantService.parseChatAiCommand("/ai --configure"))
+    assertEquals(ChatAiCommand.Configure, AiAssistantService.parseChatAiCommand("/ai -c"))
+    assertEquals(ChatAiCommand.Configure, AiAssistantService.parseChatAiCommand("/ai config"))
+    assertEquals(ChatAiCommand.Disable, AiAssistantService.parseChatAiCommand("/ai off"))
+    assertEquals(ChatAiCommand.Disable, AiAssistantService.parseChatAiCommand("/ai sair"))
+    assertEquals(
+      ChatAiCommand.EnableAndSpeak("resume o chat aí"),
+      AiAssistantService.parseChatAiCommand("/ai resume o chat aí")
+    )
+    assertNull(AiAssistantService.parseChatAiCommand("oi /ai tudo bem"))
+    assertNull(AiAssistantService.parseChatAiCommand("/aide"))
+  }
+
+  @Test
+  fun resolvePersonaNameAndPresets_mapProvidersAndAutoDetection() {
+    assertEquals("Grok", AiAssistantService.presetFor(AI_PROVIDER_GROK).defaultPersona)
+    assertEquals("ChatGPT", AiAssistantService.presetFor(AI_PROVIDER_CHATGPT).defaultPersona)
+    assertEquals("Claude", AiAssistantService.presetFor(AI_PROVIDER_CLAUDE).defaultPersona)
+    assertEquals("Gemini", AiAssistantService.presetFor(AI_PROVIDER_GEMINI).defaultPersona)
+
+    assertEquals(
+      "Grok",
+      AiAssistantService.resolvePersonaName(UserSettings(aiProvider = AI_PROVIDER_GROK))
+    )
+    assertEquals(
+      "ChatGPT",
+      AiAssistantService.resolvePersonaName(UserSettings(aiProvider = AI_PROVIDER_CHATGPT))
+    )
+    assertEquals(
+      "MeuBot",
+      AiAssistantService.resolvePersonaName(
+        UserSettings(aiProvider = AI_PROVIDER_GROK, aiPersonaName = "  MeuBot  ")
+      )
+    )
+    assertEquals(
+      "Claude",
+      AiAssistantService.resolvePersonaName(
+        UserSettings(aiApiKey = "sk-ant-abc", aiModel = "claude-sonnet-4-20250514")
+      )
+    )
+  }
+
+  @Test
+  fun isValidExternalHttpsUrl_blocksInsecureAndInternalHosts() {
+    assertTrue(AiAssistantService.isValidExternalHttpsUrl(""))
+    assertTrue(AiAssistantService.isValidExternalHttpsUrl("https://api.x.ai/v1/chat/completions"))
+    assertTrue(AiAssistantService.isValidExternalHttpsUrl("https://api.openai.com/v1/chat/completions"))
+    assertFalse(AiAssistantService.isValidExternalHttpsUrl("http://api.openai.com/v1/chat/completions"))
+    assertFalse(AiAssistantService.isValidExternalHttpsUrl("https://localhost:8080/v1"))
+    assertFalse(AiAssistantService.isValidExternalHttpsUrl("https://127.0.0.1/v1"))
+    assertFalse(AiAssistantService.isValidExternalHttpsUrl("https://192.168.1.10/v1"))
+    assertFalse(AiAssistantService.isValidExternalHttpsUrl("https://10.0.0.5/v1"))
+    assertFalse(AiAssistantService.isValidExternalHttpsUrl("https://172.16.0.1/v1"))
+  }
+
+  @Test
+  fun formatRoomTranscript_includesParticipantsAndRedactsViewOnceContent() {
+    val messages = listOf(
+      ChatMessage(
+        id = "m1",
+        senderId = "u1",
+        senderName = "Lucas",
+        text = "Bora marcar o rolê?"
+      ),
+      ChatMessage(
+        id = "m2",
+        senderId = "u2",
+        senderName = "Marina",
+        text = "Segredo super secreto",
+        viewOnce = true,
+        messageType = "TEXT"
+      ),
+      ChatMessage(
+        id = "m3",
+        senderId = "u1",
+        senderName = "Lucas",
+        text = "Boa ideia!",
+        aiGenerated = true,
+        aiPersona = "Grok"
+      ),
+      ChatMessage(
+        id = "m4",
+        senderId = "u2",
+        senderName = "Marina",
+        messageType = "GIF_AUDIO"
+      )
+    )
+
+    val transcript = AiAssistantService.formatRoomTranscript(
+      chatTitle = "Grupo Geral",
+      recentMessages = messages,
+      currentUserId = "u1",
+      currentUserName = "Eu"
+    )
+
+    assertTrue(transcript.contains("Eu: Bora marcar o rolê?"))
+    assertTrue(transcript.contains("Marina: [Enviou mensagem de texto de visualização única (conteúdo privado)]"))
+    assertFalse(transcript.contains("Segredo super secreto"))
+    assertTrue(transcript.contains("IA (Grok): Boa ideia!"))
+    assertTrue(transcript.contains("Marina: [Enviou um GIF com áudio]"))
   }
 
   @Test

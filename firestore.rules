@@ -155,6 +155,9 @@ service cloud.firestore {
              (!('localAudioPath' in data) || (data.localAudioPath is string && data.localAudioPath.size() <= 500)) &&
              (!('viewOnce' in data) || data.viewOnce is bool) &&
              (!('viewedBy' in data) || isValidStringList(data.viewedBy, 0, 50)) &&
+             (!('aiGenerated' in data) || data.aiGenerated is bool) &&
+             (!('aiPersona' in data) || (data.aiPersona is string && data.aiPersona.size() <= 80)) &&
+             (!('aiModel' in data) || (data.aiModel is string && data.aiModel.size() <= 80)) &&
              (!('deliveredTo' in data) || isValidStringList(data.deliveredTo, 0, 50)) &&
              (!('readBy' in data) || isValidStringList(data.readBy, 0, 50)) &&
              (!('edited' in data) || data.edited is bool) &&
@@ -452,7 +455,8 @@ service cloud.firestore {
                            'messageType', 'text', 'mediaUrl', 'localMediaPath',
                            'mediaDurationMs', 'fileName', 'fileSizeBytes', 'mimeType',
                            'audioUrl', 'audioFileName', 'audioMimeType', 'localAudioPath',
-                           'viewOnce', 'viewedBy', 'deliveredTo', 'readBy',
+                           'viewOnce', 'viewedBy', 'aiGenerated', 'aiPersona', 'aiModel',
+                           'deliveredTo', 'readBy',
                            'edited', 'editedAt', 'deletedFor', 'createdAt', 'updatedAt'
                          ]) &&
                          isValidMessage(incoming()) &&

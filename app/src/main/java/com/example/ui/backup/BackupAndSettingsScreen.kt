@@ -1067,24 +1067,33 @@ fun BackupAndSettingsScreen(
                             }
                         }
 
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            listOf(
-                                AI_PROVIDER_AUTO to "Auto",
-                                AI_PROVIDER_GEMINI to "Gemini",
-                                AI_PROVIDER_OPENAI to "OpenAI/Outro"
-                            ).forEach { (key, label) ->
+                            com.example.service.AiAssistantService.AI_PROVIDERS.forEach { preset ->
                                 FilterChip(
-                                    selected = aiProviderInput == key,
-                                    onClick = { aiProviderInput = key },
-                                    label = { Text(label) }
+                                    selected = aiProviderInput == preset.id,
+                                    onClick = {
+                                        aiProviderInput = preset.id
+                                        aiModelInput = preset.defaultModel
+                                        if (preset.defaultBaseUrl.isNotBlank()) {
+                                            aiCustomBaseUrlInput = preset.defaultBaseUrl
+                                        }
+                                        val savedKey = settings.savedKeyForProvider(preset.id)
+                                        if (savedKey.isNotBlank()) {
+                                            aiApiKeyInput = savedKey
+                                        }
+                                    },
+                                    label = { Text(preset.displayName, style = MaterialTheme.typography.labelSmall) }
                                 )
                             }
                         }
 
-                        if (aiProviderInput == AI_PROVIDER_OPENAI || aiCustomBaseUrlInput.isNotBlank()) {
+                        if (aiProviderInput == AI_PROVIDER_OPENAI ||
+                            aiProviderInput == com.example.data.local.AI_PROVIDER_CUSTOM ||
+                            aiCustomBaseUrlInput.isNotBlank()
+                        ) {
                             OutlinedTextField(
                                 value = aiCustomBaseUrlInput,
                                 onValueChange = { aiCustomBaseUrlInput = it },

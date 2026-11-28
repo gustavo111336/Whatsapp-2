@@ -202,7 +202,10 @@ class ChatRepository(
                                 audioMimeType = m.audioMimeType,
                                 localAudioPath = m.localAudioPath,
                                 viewOnce = m.viewOnce,
-                                viewedByJson = Json.encodeToString(m.viewedBy)
+                                viewedByJson = Json.encodeToString(m.viewedBy),
+                                aiGenerated = m.aiGenerated,
+                                aiPersona = m.aiPersona,
+                                aiModel = m.aiModel
                             )
                         }
                     )
@@ -610,7 +613,10 @@ class ChatRepository(
         chat: ChatRoom,
         senderName: String,
         text: String,
-        viewOnce: Boolean = false
+        viewOnce: Boolean = false,
+        aiGenerated: Boolean = false,
+        aiPersona: String? = null,
+        aiModel: String? = null
     ): Result<Unit> {
         val uid = try {
             requireUserId()
@@ -635,16 +641,29 @@ class ChatRepository(
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
             )
-            if (viewOnce) {
+            if (viewOnce && !aiGenerated) {
                 msgPayload["viewOnce"] = true
                 msgPayload["viewedBy"] = emptyList<String>()
+            }
+            if (aiGenerated) {
+                msgPayload["aiGenerated"] = true
+                if (!aiPersona.isNullOrBlank()) {
+                    msgPayload["aiPersona"] = aiPersona.trim().take(80)
+                }
+                if (!aiModel.isNullOrBlank()) {
+                    msgPayload["aiModel"] = aiModel.trim().take(80)
+                }
             }
             db.collection("chats").document(chat.id)
                 .collection("messages").document(msgId)
                 .set(msgPayload)
                 .await()
 
-            val preview = if (viewOnce) "🔒 Mensagem única" else cleanText.take(500)
+            val preview = when {
+                aiGenerated -> "🤖 ${aiPersona?.takeIf { it.isNotBlank() } ?: "IA"}: $cleanText".take(500)
+                viewOnce -> "🔒 Mensagem única"
+                else -> cleanText.take(500)
+            }
             db.collection("chats").document(chat.id).update(
                 mapOf(
                     "lastMessageText" to preview,
@@ -655,7 +674,9 @@ class ChatRepository(
                 )
             ).await()
 
-            setTypingStatus(chat.id, senderName, chat.participantUids, false)
+            if (!aiGenerated) {
+                setTypingStatus(chat.id, senderName, chat.participantUids, false)
+            }
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e

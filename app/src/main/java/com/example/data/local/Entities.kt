@@ -38,7 +38,10 @@ data class LocalMessageEntity(
     val audioMimeType: String? = null,
     val localAudioPath: String? = null,
     val viewOnce: Boolean = false,
-    val viewedByJson: String = "[]"
+    val viewedByJson: String = "[]",
+    val aiGenerated: Boolean = false,
+    val aiPersona: String? = null,
+    val aiModel: String? = null
 )
 
 @Entity(tableName = "local_contacts")

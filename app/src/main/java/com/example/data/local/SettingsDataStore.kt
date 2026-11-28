@@ -8,10 +8,12 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.data.model.ThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import org.json.JSONObject
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "zap2_settings")
 
@@ -22,7 +24,14 @@ const val STORAGE_MODE_GITHUB = "GITHUB"
 const val DEFAULT_AI_MODEL = "gemini-3.8-flash"
 const val AI_PROVIDER_AUTO = "AUTO"
 const val AI_PROVIDER_GEMINI = "GEMINI"
+const val AI_PROVIDER_GROK = "GROK"
+const val AI_PROVIDER_CHATGPT = "CHATGPT"
+const val AI_PROVIDER_CLAUDE = "CLAUDE"
+const val AI_PROVIDER_GROQ = "GROQ"
+const val AI_PROVIDER_DEEPSEEK = "DEEPSEEK"
+const val AI_PROVIDER_OPENROUTER = "OPENROUTER"
 const val AI_PROVIDER_OPENAI = "OPENAI_COMPATIBLE"
+const val AI_PROVIDER_CUSTOM = "CUSTOM"
 
 const val EMAIL_DELIVERY_AUTO = "AUTO"
 const val EMAIL_DELIVERY_GMAIL_SMTP = "GMAIL_SMTP"
@@ -59,6 +68,11 @@ data class UserSettings(
     val aiModel: String = DEFAULT_AI_MODEL,
     val aiProvider: String = AI_PROVIDER_AUTO,
     val aiCustomBaseUrl: String = "",
+    val aiPersonaName: String = "",
+    val aiCustomInstructions: String = "",
+    val aiAutoReplyPeers: Boolean = true,
+    val aiSavedKeysJson: String = "{}",
+    val aiJoinedChatIds: Set<String> = emptySet(),
     val emailStateUid: String = "",
     val emailVerificationEnabled: Boolean = true,
     val emailCodeVerified: Boolean = false,
@@ -70,7 +84,14 @@ data class UserSettings(
     val emailWebhookUrl: String = "",
     val emailResendApiKey: String = "",
     val emailResendFrom: String = ""
-)
+) {
+    fun savedKeyForProvider(providerId: String): String {
+        val stored = runCatching {
+            JSONObject(aiSavedKeysJson.ifBlank { "{}" }).optString(providerId, "")
+        }.getOrDefault("")
+        return if (stored.isNotBlank()) stored else if (providerId == aiProvider) aiApiKey else ""
+    }
+}
 
 class SettingsDataStore(private val context: Context) {
     private object Keys {
@@ -103,6 +124,11 @@ class SettingsDataStore(private val context: Context) {
         val AI_MODEL = stringPreferencesKey("ai_model")
         val AI_PROVIDER = stringPreferencesKey("ai_provider")
         val AI_CUSTOM_BASE_URL = stringPreferencesKey("ai_custom_base_url")
+        val AI_PERSONA_NAME = stringPreferencesKey("ai_persona_name")
+        val AI_CUSTOM_INSTRUCTIONS = stringPreferencesKey("ai_custom_instructions")
+        val AI_AUTO_REPLY_PEERS = booleanPreferencesKey("ai_auto_reply_peers")
+        val AI_SAVED_KEYS_JSON = stringPreferencesKey("ai_saved_keys_json")
+        val AI_JOINED_CHAT_IDS = stringSetPreferencesKey("ai_joined_chat_ids")
         val EMAIL_STATE_UID = stringPreferencesKey("email_state_uid")
         val EMAIL_VERIFICATION_ENABLED = booleanPreferencesKey("email_verification_enabled")
         val EMAIL_CODE_VERIFIED = booleanPreferencesKey("email_code_verified")
@@ -149,6 +175,11 @@ class SettingsDataStore(private val context: Context) {
             aiModel = (prefs[Keys.AI_MODEL] ?: DEFAULT_AI_MODEL).ifBlank { DEFAULT_AI_MODEL },
             aiProvider = (prefs[Keys.AI_PROVIDER] ?: AI_PROVIDER_AUTO).ifBlank { AI_PROVIDER_AUTO },
             aiCustomBaseUrl = prefs[Keys.AI_CUSTOM_BASE_URL] ?: "",
+            aiPersonaName = prefs[Keys.AI_PERSONA_NAME] ?: "",
+            aiCustomInstructions = prefs[Keys.AI_CUSTOM_INSTRUCTIONS] ?: "",
+            aiAutoReplyPeers = prefs[Keys.AI_AUTO_REPLY_PEERS] ?: true,
+            aiSavedKeysJson = prefs[Keys.AI_SAVED_KEYS_JSON] ?: "{}",
+            aiJoinedChatIds = prefs[Keys.AI_JOINED_CHAT_IDS] ?: emptySet(),
             emailStateUid = prefs[Keys.EMAIL_STATE_UID] ?: "",
             emailVerificationEnabled = prefs[Keys.EMAIL_VERIFICATION_ENABLED] ?: true,
             emailCodeVerified = prefs[Keys.EMAIL_CODE_VERIFIED] ?: false,
@@ -271,15 +302,37 @@ class SettingsDataStore(private val context: Context) {
         apiKey: String,
         model: String,
         provider: String,
-        customBaseUrl: String
+        customBaseUrl: String,
+        personaName: String? = null,
+        customInstructions: String? = null,
+        autoReplyPeers: Boolean? = null
     ) {
         val cleanModel = model.trim().trim('*', '`', '"', '\'').ifBlank { DEFAULT_AI_MODEL }
         val cleanProvider = provider.trim().ifBlank { AI_PROVIDER_AUTO }
+        val cleanKey = apiKey.trim()
         context.dataStore.edit { prefs ->
-            prefs[Keys.AI_API_KEY] = apiKey.trim()
+            prefs[Keys.AI_API_KEY] = cleanKey
             prefs[Keys.AI_MODEL] = cleanModel
             prefs[Keys.AI_PROVIDER] = cleanProvider
             prefs[Keys.AI_CUSTOM_BASE_URL] = customBaseUrl.trim()
+            if (personaName != null) {
+                prefs[Keys.AI_PERSONA_NAME] = personaName.trim().take(48)
+            }
+            if (customInstructions != null) {
+                prefs[Keys.AI_CUSTOM_INSTRUCTIONS] = customInstructions.trim().take(600)
+            }
+            if (autoReplyPeers != null) {
+                prefs[Keys.AI_AUTO_REPLY_PEERS] = autoReplyPeers
+            }
+            val mapJson = runCatching {
+                JSONObject(prefs[Keys.AI_SAVED_KEYS_JSON]?.ifBlank { "{}" } ?: "{}")
+            }.getOrElse { JSONObject() }
+            if (cleanKey.isNotBlank()) {
+                mapJson.put(cleanProvider, cleanKey)
+            } else {
+                mapJson.remove(cleanProvider)
+            }
+            prefs[Keys.AI_SAVED_KEYS_JSON] = mapJson.toString()
         }
     }
 
@@ -287,6 +340,25 @@ class SettingsDataStore(private val context: Context) {
         val cleanModel = model.trim().trim('*', '`', '"', '\'').ifBlank { DEFAULT_AI_MODEL }
         context.dataStore.edit { prefs ->
             prefs[Keys.AI_MODEL] = cleanModel
+        }
+    }
+
+    suspend fun setChatAiJoined(chatId: String, enabled: Boolean) {
+        if (chatId.isBlank()) return
+        context.dataStore.edit { prefs ->
+            val current = (prefs[Keys.AI_JOINED_CHAT_IDS] ?: emptySet()).toMutableSet()
+            if (enabled) {
+                current.add(chatId)
+            } else {
+                current.remove(chatId)
+            }
+            prefs[Keys.AI_JOINED_CHAT_IDS] = current
+        }
+    }
+
+    suspend fun setAiAutoReplyPeers(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.AI_AUTO_REPLY_PEERS] = enabled
         }
     }
 

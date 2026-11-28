@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.local.DEFAULT_AI_MODEL
 import com.example.data.local.SavedStickerGifEntity
 import com.example.data.local.ScheduledMessageEntity
 import com.example.data.local.SettingsDataStore
@@ -22,6 +23,7 @@ import com.example.data.remote.UserAndContactsRepository
 import com.example.data.remote.unwrapFirestoreException
 import com.example.service.AiAssistantService
 import com.example.service.AudioRecorderPlayer
+import com.example.service.ChatAiCommand
 import com.example.service.ScheduledMessageScheduler
 import com.example.service.ScheduledMessageTimeUtils
 import com.example.service.ZipArchiveHelper
@@ -86,8 +88,15 @@ class ChatDetailViewModel(
     private val _showAiConfigPrompt = MutableStateFlow(false)
     val showAiConfigPrompt: StateFlow<Boolean> = _showAiConfigPrompt.asStateFlow()
 
+    private val _isAiThinkingInChat = MutableStateFlow(false)
+    val isAiThinkingInChat: StateFlow<Boolean> = _isAiThinkingInChat.asStateFlow()
+
     val userSettings: StateFlow<UserSettings> = settingsStore.settingsFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UserSettings())
+
+    val isAiActiveInChat: StateFlow<Boolean> = settingsStore.settingsFlow
+        .map { chatId in it.aiJoinedChatIds }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), false)
 
     val uploadProgress: StateFlow<UploadProgressState?> = chatRepository.uploadProgress
 
@@ -112,6 +121,12 @@ class ChatDetailViewModel(
     private var typingTimeoutJob: Job? = null
     private var isCurrentlyMarkedTyping = false
     private var lastTypingSentMs = 0L
+    private var baselineMessagesInitialized = false
+    private var lastObservedAutoAiMessageId: String? = null
+    private var aiAutoReplyJob: Job? = null
+    private var pendingActivateAiAfterConfig = false
+    private var pendingAiFocusPromptAfterConfig: String? = null
+    private var pendingSuggestAfterConfig = false
 
     val chatRoom: StateFlow<ChatRoom?> = chatRepository.observeChat(chatId, currentUserId)
         .catch { error ->
@@ -196,6 +211,38 @@ class ChatDetailViewModel(
                     }
                 }
         }
+        viewModelScope.launch {
+            messagesState.collect { state ->
+                val list = (state as? UiState.Success)?.data ?: return@collect
+                val latest = list.lastOrNull()
+                if (!baselineMessagesInitialized) {
+                    baselineMessagesInitialized = true
+                    lastObservedAutoAiMessageId = latest?.id
+                    return@collect
+                }
+                if (latest != null && latest.id != lastObservedAutoAiMessageId) {
+                    lastObservedAutoAiMessageId = latest.id
+                    val settings = userSettings.value
+                    val isFresh = latest.createdAt == null ||
+                        (System.currentTimeMillis() - latest.createdAt.toDate().time) < 120_000L
+                    if (chatId in settings.aiJoinedChatIds &&
+                        settings.aiAutoReplyPeers &&
+                        settings.aiApiKey.isNotBlank() &&
+                        isFresh &&
+                        !latest.aiGenerated &&
+                        latest.messageType != "SYSTEM" &&
+                        !latest.viewOnce &&
+                        latest.senderId != currentUserId
+                    ) {
+                        aiAutoReplyJob?.cancel()
+                        aiAutoReplyJob = viewModelScope.launch {
+                            delay(900L)
+                            triggerAiRoomReply(focusPrompt = null)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fun toggleViewOnceMode() {
@@ -257,6 +304,35 @@ class ChatDetailViewModel(
         val text = _draftText.value.trim()
         if (text.isEmpty()) return
         val targetEdit = _editingMessage.value
+
+        if (targetEdit == null) {
+            val aiCommand = AiAssistantService.parseChatAiCommand(text)
+            if (aiCommand != null) {
+                _draftText.value = ""
+                _viewOnceMode.value = false
+                clearTypingStatusNow(room)
+                handleAiSlashCommand(aiCommand)
+                return
+            }
+
+            val slashModel = AiAssistantService.parseSlashModelCommand(text)
+            if (slashModel != null) {
+                _draftText.value = ""
+                _viewOnceMode.value = false
+                clearTypingStatusNow(room)
+                viewModelScope.launch {
+                    if (slashModel.isBlank()) {
+                        val active = settingsStore.settingsFlow.first().aiModel.ifBlank { DEFAULT_AI_MODEL }
+                        _toastMessage.value = "Modelo atual: $active (use /model nome ou /ai --configure)"
+                    } else {
+                        settingsStore.setAiModel(slashModel)
+                        _toastMessage.value = "Modelo atualizado para $slashModel!"
+                    }
+                }
+                return
+            }
+        }
+
         val useViewOnce = _viewOnceMode.value && targetEdit == null
         _draftText.value = ""
         _editingMessage.value = null
@@ -274,6 +350,15 @@ class ChatDetailViewModel(
                     }
             } else {
                 chatRepository.sendTextMessage(room, myDisplayName, text, viewOnce = useViewOnce)
+                    .onSuccess {
+                        if (!useViewOnce && isAiActiveInChat.value) {
+                            aiAutoReplyJob?.cancel()
+                            aiAutoReplyJob = viewModelScope.launch {
+                                delay(450L)
+                                triggerAiRoomReply(focusPrompt = null)
+                            }
+                        }
+                    }
                     .onFailure { err ->
                         _errorBanner.value = err.localizedMessage ?: "Falha ao enviar mensagem."
                     }
@@ -732,12 +817,127 @@ class ChatDetailViewModel(
         }
     }
 
+    private fun handleAiSlashCommand(command: ChatAiCommand) {
+        viewModelScope.launch {
+            val settings = settingsStore.settingsFlow.first()
+            when (command) {
+                is ChatAiCommand.Configure -> {
+                    _showAiConfigPrompt.value = true
+                }
+                is ChatAiCommand.Disable -> {
+                    aiAutoReplyJob?.cancel()
+                    settingsStore.setChatAiJoined(chatId, false)
+                    _toastMessage.value = "IA saiu deste chat."
+                }
+                is ChatAiCommand.EnableAndSpeak -> {
+                    if (settings.aiApiKey.isBlank()) {
+                        pendingActivateAiAfterConfig = true
+                        pendingAiFocusPromptAfterConfig = command.focusPrompt
+                        _showAiConfigPrompt.value = true
+                        _toastMessage.value = "Configure a API Key, provedor e modelo para ativar /ai!"
+                    } else {
+                        settingsStore.setChatAiJoined(chatId, true)
+                        val persona = AiAssistantService.resolvePersonaName(settings)
+                        _toastMessage.value = "$persona entrou no chat!"
+                        triggerAiRoomReply(focusPrompt = command.focusPrompt)
+                    }
+                }
+            }
+        }
+    }
+
+    fun toggleAiInChat() {
+        viewModelScope.launch {
+            val currentlyActive = isAiActiveInChat.value
+            if (currentlyActive) {
+                aiAutoReplyJob?.cancel()
+                settingsStore.setChatAiJoined(chatId, false)
+                _toastMessage.value = "IA saiu deste chat."
+            } else {
+                handleAiSlashCommand(ChatAiCommand.EnableAndSpeak(focusPrompt = null))
+            }
+        }
+    }
+
+    fun openAiConfigDialog() {
+        _showAiConfigPrompt.value = true
+    }
+
+    fun nudgeAiSpeakNow() {
+        viewModelScope.launch {
+            val settings = settingsStore.settingsFlow.first()
+            if (settings.aiApiKey.isBlank()) {
+                pendingActivateAiAfterConfig = true
+                _showAiConfigPrompt.value = true
+                return@launch
+            }
+            if (!isAiActiveInChat.value) {
+                settingsStore.setChatAiJoined(chatId, true)
+            }
+            triggerAiRoomReply(focusPrompt = null)
+        }
+    }
+
+    private fun triggerAiRoomReply(focusPrompt: String? = null) {
+        val service = aiAssistantService ?: return
+        val room = chatRoom.value ?: return
+        if (_isAiThinkingInChat.value) return
+        viewModelScope.launch {
+            val settings = settingsStore.settingsFlow.first()
+            if (settings.aiApiKey.isBlank()) return@launch
+            _isAiThinkingInChat.value = true
+            _errorBanner.value = null
+            try {
+                val persona = AiAssistantService.resolvePersonaName(settings)
+                val activeModel = settings.aiModel.ifBlank { DEFAULT_AI_MODEL }
+                val messages = (messagesState.value as? UiState.Success)?.data.orEmpty()
+                val title = room.resolveDisplayTitle(currentUserId)
+                val isGroup = room.chatType == "GROUP"
+                val names = room.participantUids.map { uid ->
+                    participantProfiles.value[uid]?.displayName
+                        ?: room.participantNames[uid]
+                        ?: if (uid == currentUserId) myDisplayName else "Participante"
+                }
+
+                service.generateRoomReply(
+                    settings = settings,
+                    chatTitle = title,
+                    isGroup = isGroup,
+                    participantNames = names,
+                    recentMessages = messages,
+                    currentUserId = currentUserId,
+                    currentUserName = myDisplayName,
+                    focusPrompt = focusPrompt
+                ).onSuccess { reply ->
+                    chatRepository.sendTextMessage(
+                        chat = room,
+                        senderName = myDisplayName,
+                        text = reply,
+                        viewOnce = false,
+                        aiGenerated = true,
+                        aiPersona = persona,
+                        aiModel = activeModel
+                    ).onFailure { err ->
+                        _errorBanner.value = err.localizedMessage ?: "Falha ao enviar fala da IA."
+                    }
+                }.onFailure { err ->
+                    _errorBanner.value = err.localizedMessage ?: "Falha ao gerar resposta da IA no chat."
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } finally {
+                _isAiThinkingInChat.value = false
+            }
+        }
+    }
+
     fun requestAiReplySuggestions() {
         val service = aiAssistantService ?: return
         if (_isLoadingSuggestions.value) return
         viewModelScope.launch {
             val settings = settingsStore.settingsFlow.first()
             if (settings.aiApiKey.isBlank()) {
+                pendingSuggestAfterConfig = true
                 _showAiConfigPrompt.value = true
                 return@launch
             }
@@ -774,19 +974,47 @@ class ChatDetailViewModel(
 
     fun dismissAiConfigPrompt() {
         _showAiConfigPrompt.value = false
+        pendingActivateAiAfterConfig = false
+        pendingAiFocusPromptAfterConfig = null
+        pendingSuggestAfterConfig = false
     }
 
     fun saveQuickAiConfig(
         apiKey: String,
         model: String,
         provider: String,
-        customBaseUrl: String
+        customBaseUrl: String,
+        personaName: String = "",
+        customInstructions: String = "",
+        autoReplyPeers: Boolean = true
     ) {
         viewModelScope.launch {
-            settingsStore.saveAiConfig(apiKey, model, provider, customBaseUrl)
+            settingsStore.saveAiConfig(
+                apiKey = apiKey,
+                model = model,
+                provider = provider,
+                customBaseUrl = customBaseUrl,
+                personaName = personaName,
+                customInstructions = customInstructions,
+                autoReplyPeers = autoReplyPeers
+            )
             _showAiConfigPrompt.value = false
+            val shouldActivateAi = pendingActivateAiAfterConfig
+            val focusPrompt = pendingAiFocusPromptAfterConfig
+            val shouldSuggest = pendingSuggestAfterConfig
+            pendingActivateAiAfterConfig = false
+            pendingAiFocusPromptAfterConfig = null
+            pendingSuggestAfterConfig = false
+
             if (apiKey.isNotBlank()) {
-                requestAiReplySuggestions()
+                val label = personaName.ifBlank { AiAssistantService.presetFor(provider).defaultPersona }
+                _toastMessage.value = "IA configurada: $label ($model)"
+                if (shouldActivateAi) {
+                    settingsStore.setChatAiJoined(chatId, true)
+                    triggerAiRoomReply(focusPrompt = focusPrompt)
+                } else if (shouldSuggest) {
+                    requestAiReplySuggestions()
+                }
             }
         }
     }
@@ -798,6 +1026,7 @@ class ChatDetailViewModel(
     override fun onCleared() {
         super.onCleared()
         typingTimeoutJob?.cancel()
+        aiAutoReplyJob?.cancel()
         audioPlayer.stopPlayback()
         audioPlayer.stopRecording(discard = true)
         val room = chatRoom.value

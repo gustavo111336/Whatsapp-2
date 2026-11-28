@@ -419,10 +419,21 @@ class BackupViewModel(
         apiKey: String,
         model: String,
         provider: String,
-        customBaseUrl: String
+        customBaseUrl: String,
+        personaName: String? = null,
+        customInstructions: String? = null,
+        autoReplyPeers: Boolean? = null
     ) {
         viewModelScope.launch {
-            settingsStore.saveAiConfig(apiKey, model, provider, customBaseUrl)
+            settingsStore.saveAiConfig(
+                apiKey = apiKey,
+                model = model,
+                provider = provider,
+                customBaseUrl = customBaseUrl,
+                personaName = personaName,
+                customInstructions = customInstructions,
+                autoReplyPeers = autoReplyPeers
+            )
             val savedModel = model.trim().ifBlank { "gemini-3.8-flash" }
             _statusMessage.value = if (apiKey.isBlank()) {
                 "API Key da IA removida. Modelo padrão: $savedModel."

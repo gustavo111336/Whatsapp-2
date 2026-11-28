@@ -68,6 +68,8 @@ import androidx.compose.material.icons.rounded.PictureAsPdf
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Schedule
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -121,6 +123,7 @@ import com.example.data.model.ChatMessage
 import com.example.data.model.UiState
 import com.example.data.model.ZipExtractionResult
 import com.example.data.remote.FreeMediaStorageManager
+import com.example.service.AiAssistantService
 import com.example.service.ScheduledMessageTimeUtils
 import com.example.service.ZipArchiveHelper
 import com.example.ui.aichat.AiConfigDialog
@@ -159,6 +162,8 @@ fun ChatDetailScreen(
     val aiSuggestions by viewModel.aiSuggestions.collectAsStateWithLifecycle()
     val isLoadingSuggestions by viewModel.isLoadingSuggestions.collectAsStateWithLifecycle()
     val showAiConfigPrompt by viewModel.showAiConfigPrompt.collectAsStateWithLifecycle()
+    val isAiActiveInChat by viewModel.isAiActiveInChat.collectAsStateWithLifecycle()
+    val isAiThinkingInChat by viewModel.isAiThinkingInChat.collectAsStateWithLifecycle()
     val userSettings by viewModel.userSettings.collectAsStateWithLifecycle()
     val viewOnceMode by viewModel.viewOnceMode.collectAsStateWithLifecycle()
     val toastMessage by viewModel.toastMessage.collectAsStateWithLifecycle()
@@ -593,9 +598,35 @@ fun ChatDetailScreen(
                     }
                 }
 
+                if (isAiActiveInChat && !isRecording && activeEdit == null) {
+                    AiInChatBanner(
+                        personaName = AiAssistantService.resolvePersonaName(userSettings),
+                        activeModel = userSettings.aiModel.ifBlank { DEFAULT_AI_MODEL },
+                        isThinking = isAiThinkingInChat,
+                        onSpeakNow = viewModel::nudgeAiSpeakNow,
+                        onConfigure = viewModel::openAiConfigDialog,
+                        onLeaveChat = viewModel::toggleAiInChat
+                    )
+                }
+
+                if (draftText.trimStart().startsWith("/") && !isRecording && activeEdit == null) {
+                    SlashCommandsQuickStrip(
+                        isAiActiveInChat = isAiActiveInChat,
+                        onPickCommand = { cmd, autoSend ->
+                            viewModel.onDraftChanged(cmd)
+                            if (autoSend) {
+                                viewModel.sendTextMessage()
+                            }
+                        }
+                    )
+                }
+
                 if (!isRecording && activeEdit == null) {
                     QuickExtrasBar(
                         viewOnceEnabled = viewOnceMode,
+                        aiJoined = isAiActiveInChat,
+                        onToggleAiInChat = viewModel::toggleAiInChat,
+                        onOpenAiConfigure = viewModel::openAiConfigDialog,
                         onOpenGifsAndStickers = { showGifsAndStickersTray = true },
                         onOpenStickerCreator = { showStickerCreator = true },
                         onOpenGifWithAudio = { showGifWithAudioCreator = true },
@@ -1529,9 +1560,12 @@ private fun MessageBubbleRow(
         return
     }
 
+    val isAiMsg = message.aiGenerated
+    val alignRight = isMine && !isAiMsg
+
     val bubbleShape = when {
-        isMine && isFirstInGroup -> Zap2ExpressiveShapes.OutgoingBubbleFirst
-        isMine -> Zap2ExpressiveShapes.OutgoingBubbleGrouped
+        alignRight && isFirstInGroup -> Zap2ExpressiveShapes.OutgoingBubbleFirst
+        alignRight -> Zap2ExpressiveShapes.OutgoingBubbleGrouped
         isFirstInGroup -> Zap2ExpressiveShapes.IncomingBubbleFirst
         else -> Zap2ExpressiveShapes.IncomingBubbleGrouped
     }
@@ -1539,12 +1573,14 @@ private fun MessageBubbleRow(
     val isStickerBubble = message.messageType == "STICKER" && !message.viewOnce
     val bubbleColor = when {
         isStickerBubble -> Color.Transparent
-        isMine -> MaterialTheme.colorScheme.primaryContainer
+        isAiMsg -> MaterialTheme.colorScheme.tertiaryContainer
+        alignRight -> MaterialTheme.colorScheme.primaryContainer
         else -> MaterialTheme.colorScheme.surfaceContainerHigh
     }
     val textColor = when {
         isStickerBubble -> MaterialTheme.colorScheme.onSurface
-        isMine -> MaterialTheme.colorScheme.onPrimaryContainer
+        isAiMsg -> MaterialTheme.colorScheme.onTertiaryContainer
+        alignRight -> MaterialTheme.colorScheme.onPrimaryContainer
         else -> MaterialTheme.colorScheme.onSurface
     }
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
@@ -1560,11 +1596,28 @@ private fun MessageBubbleRow(
         modifier = Modifier
             .fillMaxWidth()
             .padding(top = if (isFirstInGroup) 6.dp else 1.dp),
-        horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start,
+        horizontalArrangement = if (alignRight) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.Bottom
     ) {
-        if (!isMine) {
-            if (isFirstInGroup) {
+        if (!alignRight) {
+            if (isAiMsg) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .padding(end = 6.dp)
+                        .size(30.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Rounded.SmartToy,
+                            contentDescription = "IA no chat",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            } else if (isFirstInGroup) {
                 Zap2Avatar(
                     name = message.senderName.ifBlank { "WhatwillIdo" },
                     photoUrl = senderPhotoUrl,
@@ -1578,7 +1631,7 @@ private fun MessageBubbleRow(
         Surface(
             shape = bubbleShape,
             color = bubbleColor,
-            tonalElevation = if (isMine || isStickerBubble) 0.dp else 1.dp,
+            tonalElevation = if (alignRight || isStickerBubble) 0.dp else 1.dp,
             modifier = Modifier
                 .widthIn(min = 84.dp, max = 300.dp)
                 .clip(bubbleShape)
@@ -1586,12 +1639,42 @@ private fun MessageBubbleRow(
                     onClick = {},
                     onLongClick = onLongClick
                 )
+                .then(if (isAiMsg) Modifier.testTag("ai_chat_bubble_${message.id}") else Modifier)
         ) {
             Column(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                if (isGroup && !isMine && isFirstInGroup) {
+                if (isAiMsg) {
+                    val personaLabel = message.aiPersona?.takeIf { it.isNotBlank() } ?: "IA"
+                    val modelLabel = message.aiModel?.takeIf { it.isNotBlank() }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                        ) {
+                            Text(
+                                text = if (modelLabel != null) "🤖 $personaLabel • $modelLabel" else "🤖 $personaLabel",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                        Text(
+                            text = "via ${message.senderName}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = textColor.copy(alpha = 0.7f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                } else if (isGroup && !isMine && isFirstInGroup) {
                     Text(
                         text = message.senderName,
                         style = MaterialTheme.typography.labelMedium,
@@ -2048,8 +2131,155 @@ private fun MessageBubbleRow(
 }
 
 @Composable
+private fun AiInChatBanner(
+    personaName: String,
+    activeModel: String,
+    isThinking: Boolean,
+    onSpeakNow: () -> Unit,
+    onConfigure: () -> Unit,
+    onLeaveChat: () -> Unit
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.8f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("ai_in_chat_banner")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (isThinking) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Rounded.SmartToy,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (isThinking) "$personaName lendo o chat e respondendo…" else "$personaName entrosada no chat",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "Modelo: $activeModel • vê o histórico e fala com todos",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.78f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Surface(
+                onClick = onSpeakNow,
+                enabled = !isThinking,
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                modifier = Modifier.testTag("ai_nudge_speak_button")
+            ) {
+                Text(
+                    text = "Falar",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                )
+            }
+            IconButton(
+                onClick = onConfigure,
+                modifier = Modifier
+                    .size(30.dp)
+                    .testTag("ai_banner_configure_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Settings,
+                    contentDescription = "Configurar IA (/ai --configure)",
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+            IconButton(
+                onClick = onLeaveChat,
+                modifier = Modifier
+                    .size(30.dp)
+                    .testTag("ai_banner_leave_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = "Desativar IA neste chat",
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SlashCommandsQuickStrip(
+    isAiActiveInChat: Boolean,
+    onPickCommand: (command: String, autoSend: Boolean) -> Unit
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("slash_commands_strip")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AssistChip(
+                onClick = { onPickCommand("/ai", true) },
+                leadingIcon = {
+                    Icon(Icons.Rounded.SmartToy, contentDescription = null, modifier = Modifier.size(15.dp))
+                },
+                label = { Text("/ai (Entrar e falar)") }
+            )
+            AssistChip(
+                onClick = { onPickCommand("/ai --configure", true) },
+                leadingIcon = {
+                    Icon(Icons.Rounded.Settings, contentDescription = null, modifier = Modifier.size(15.dp))
+                },
+                label = { Text("/ai --configure") }
+            )
+            if (isAiActiveInChat) {
+                AssistChip(
+                    onClick = { onPickCommand("/ai off", true) },
+                    label = { Text("/ai off (Sair)") }
+                )
+            }
+            AssistChip(
+                onClick = { onPickCommand("/model ", false) },
+                label = { Text("/model …") }
+            )
+        }
+    }
+}
+
+@Composable
 private fun QuickExtrasBar(
     viewOnceEnabled: Boolean,
+    aiJoined: Boolean,
+    onToggleAiInChat: () -> Unit,
+    onOpenAiConfigure: () -> Unit,
     onOpenGifsAndStickers: () -> Unit,
     onOpenStickerCreator: () -> Unit,
     onOpenGifWithAudio: () -> Unit,
@@ -2064,6 +2294,23 @@ private fun QuickExtrasBar(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        FilterChip(
+            selected = aiJoined,
+            onClick = onToggleAiInChat,
+            leadingIcon = {
+                Icon(Icons.Rounded.SmartToy, contentDescription = null, modifier = Modifier.size(16.dp))
+            },
+            label = { Text(if (aiJoined) "IA Ativa" else "/ai Chat") },
+            modifier = Modifier.testTag("toggle_chat_ai_button")
+        )
+        AssistChip(
+            onClick = onOpenAiConfigure,
+            leadingIcon = {
+                Icon(Icons.Rounded.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
+            },
+            label = { Text("/ai Config") },
+            modifier = Modifier.testTag("open_ai_configure_button")
+        )
         FilterChip(
             selected = viewOnceEnabled,
             onClick = onToggleViewOnce,
